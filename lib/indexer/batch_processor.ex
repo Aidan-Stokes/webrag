@@ -220,6 +220,11 @@ defmodule AONCrawler.Indexer.BatchProcessor do
     retry_attempts = Keyword.get(opts, :retry_attempts, 3)
     retry_delay = Keyword.get(opts, :retry_delay_ms, 1000)
 
+    # Create ETS table for checkpoint persistence
+    if :ets.info(:aoncrawler_batch_checkpoint) == :undefined do
+      :ets.new(:aoncrawler_batch_checkpoint, [:set, :named_table, :public])
+    end
+
     state = %{
       queue: [],
       in_flight: nil,

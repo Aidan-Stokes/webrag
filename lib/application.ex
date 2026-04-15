@@ -72,20 +72,21 @@ defmodule AONCrawler.Application do
   """
   @spec build_supervision_tree() :: [Supervisor.child()]
   def build_supervision_tree do
-    base_children = [
-      # Database is fundamental - everything else needs it
-      database_child(),
-      # Crawler infrastructure
-      crawler_children(),
-      # Indexing and retrieval
-      indexer_children(),
-      # LLM interface
-      llm_child(),
-      # API layer (optional, can be disabled)
-      api_child()
-    ]
-    |> List.flatten()
-    |> Enum.reject(&is_nil/1)
+    base_children =
+      [
+        # Database is fundamental - everything else needs it
+        database_child(),
+        # Crawler infrastructure
+        crawler_children(),
+        # Indexing and retrieval
+        indexer_children(),
+        # LLM interface
+        llm_child(),
+        # API layer (optional, can be disabled)
+        api_child()
+      ]
+      |> List.flatten()
+      |> Enum.reject(&is_nil/1)
 
     Logger.debug("Supervision tree built", child_count: length(base_children))
 
@@ -103,11 +104,21 @@ defmodule AONCrawler.Application do
   # Crawler supervisor and worker pool
   defp crawler_children do
     if Application.get_env(:aoncrawler, :start_crawler, true) do
+      # Initialize ETS table for coordinator state persistence
+      if :ets.info(:aoncrawler_coordinator_state) == :undefined do
+        :ets.new(:aoncrawler_coordinator_state, [:set, :named_table, :public])
+        Logger.info("Created ETS table for coordinator state")
+      else
+        # Clear stale state so fresh crawl uses new options
+        :ets.delete_all_objects(:aoncrawler_coordinator_state)
+        Logger.info("Cleared stale ETS state")
+      end
+
       max_concurrent =
-        Application.get_env(:aoncrawler, :crawler_max_concurrent, 5)
+        Application.get_env(:aoncrawler, :crawler_max_concurrent, 20)
 
       rate_limit =
-        Application.get_env(:aoncrawler, :crawler_rate_limit, 2)
+        Application.get_env(:aoncrawler, :crawler_rate_limit, 10)
 
       [
         # Rate limiter to respect source server
@@ -115,7 +126,7 @@ defmodule AONCrawler.Application do
         # Worker pool supervisor
         {AONCrawler.Crawler.WorkerSupervisor, max_concurrent: max_concurrent},
         # Main crawler coordinator
-        {AONCrawler.Crawler.Coordinator, []}
+        {AONCrawler.Crawler.Coordinator, [persist_state: false]}
       ]
     else
       []

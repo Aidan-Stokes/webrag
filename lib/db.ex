@@ -22,6 +22,15 @@ defmodule AONCrawler.DB do
   # ============================================================================
 
   @doc """
+  Saves a crawled document.
+  """
+  @spec save_crawled_document(map()) :: :ok
+  def save_crawled_document(doc) do
+    doc = Map.new(doc, fn {k, v} -> {to_string(k), v} end)
+    save_document(doc)
+  end
+
+  @doc """
   Saves a document.
   """
   @spec save_document(map()) :: :ok

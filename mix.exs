@@ -14,7 +14,7 @@ defmodule Aoncrawler.MixProject do
 
   def application do
     [
-      mod: {Aoncrawler.Application, []},
+      mod: {AONCrawler.Application, []},
       extra_applications: [:logger, :runtime_tools]
     ]
   end

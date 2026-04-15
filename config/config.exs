@@ -13,8 +13,8 @@ config :logger, :console,
   metadata: [:request_id]
 
 config :aoncrawler, AONCrawler.Crawler,
-  max_concurrent: 5,
-  rate_limit: 2,
+  max_concurrent: 20,
+  rate_limit: 10,
   request_timeout: 30_000,
   user_agent: "AONCrawler/1.0 (Pathfinder 2e Rules RAG)"
 
@@ -33,7 +33,7 @@ config :aoncrawler, AONCrawler.API.Endpoint,
   url: [host: "0.0.0.0"]
 
 config :aoncrawler,
-  start_database: true,
+  start_database: false,
   start_crawler: true,
   start_indexer: true,
   start_llm: true,

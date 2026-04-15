@@ -43,8 +43,6 @@ defmodule AONCrawler.Crawler.Coordinator do
 
   require Logger
 
-  alias AONCrawler.Crawler.{Worker, RateLimiter}
-
   # ============================================================================
   # Client API
   # ============================================================================
@@ -436,30 +434,65 @@ defmodule AONCrawler.Crawler.Coordinator do
 
     new_state =
       case result do
-        {:ok, _document} ->
-          state
-          |> Map.put(:in_progress, new_in_progress)
-          |> update_in([:completed], &MapSet.put(&1, url))
-          |> update_in([:stats, :total_crawled], &(&1 + 1))
-          |> tap(fn s ->
-            Logger.info("Crawl complete", url: url, total: s.stats.total_crawled)
-          end)
+        {:ok, content} ->
+          Logger.debug("Saving document",
+            url: url,
+            has_content: content.content != nil,
+            has_links: content.links != nil,
+            link_count: length(content.links || [])
+          )
+
+          doc = %{
+            "url" => url,
+            "title" => content.metadata.title,
+            "text" => content.content,
+            "source" => "2e.aonprd.com"
+          }
+
+          Database.save_crawled_document(doc)
+
+          # Add new URLs to the queue directly
+          new_urls =
+            (content.links || [])
+            |> Enum.map(& &1.url)
+            |> Enum.reject(&MapSet.member?(state.crawled_urls, &1))
+
+          # Update state with new URLs in queue
+          new_queue = Enum.reduce(new_urls, state.pending_queue, &:queue.in(&1, &2))
+
+          new_state_with_queue =
+            state
+            |> Map.put(:pending_queue, new_queue)
+            |> Map.put(:in_progress, new_in_progress)
+            |> update_in([:completed], &MapSet.put(&1, url))
+            |> update_in([:stats, :total_crawled], &(&1 + 1))
+
+          pending = :queue.len(new_state_with_queue.pending_queue)
+
+          Logger.info("Crawl complete",
+            url: url,
+            total: new_state_with_queue.stats.total_crawled,
+            new_urls: length(new_urls),
+            pending: pending
+          )
+
+          new_state_with_queue
 
         {:error, reason} ->
+          Logger.warning("Crawl failed", url: url, reason: inspect(reason))
+
           state
           |> Map.put(:in_progress, new_in_progress)
           |> update_in([:failed], &MapSet.put(&1, url))
           |> update_in([:stats, :total_failed], &(&1 + 1))
-          |> tap(fn _ ->
-            Logger.warning("Crawl failed", url: url, reason: inspect(reason))
-          end)
       end
 
     persist_state(new_state)
 
     # Check if crawl is complete
     new_state =
-      if :queue.is_empty(new_state.pending_queue) and MapSet.size(new_state.in_progress) == 0 do
+      if :queue.is_empty(new_state.pending_queue) and
+           MapSet.size(new_state.in_progress) == 0 do
         Logger.info("Crawl job complete",
           job_id: state.job_id,
           completed: new_state.stats.total_crawled,
@@ -522,37 +555,45 @@ defmodule AONCrawler.Crawler.Coordinator do
   defp dispatch_work(state) do
     available_slots = state.max_concurrent - MapSet.size(state.in_progress)
 
-    if available_slots > 0 and :queue.is_empty(state.pending_queue) == false do
-      {items, remaining_queue} = :queue.split(available_slots, state.pending_queue)
-
-      new_in_progress =
-        :queue.to_list(items)
-        |> Enum.reduce(state.in_progress, fn item, acc ->
-          spawn_crawl(item, state.job_id)
-          MapSet.put(acc, item[:url] || item)
-        end)
-
+    # Check if we have work to dispatch and slots available
+    if available_slots <= 0 or :queue.is_empty(state.pending_queue) do
       state
-      |> Map.put(:pending_queue, remaining_queue)
-      |> Map.put(:in_progress, new_in_progress)
     else
-      state
+      # Get queue size first to avoid split errors
+      queue_size = :queue.len(state.pending_queue)
+      items_to_dispatch = min(available_slots, queue_size)
+
+      if items_to_dispatch > 0 do
+        {items, remaining_queue} = :queue.split(items_to_dispatch, state.pending_queue)
+
+        new_in_progress =
+          :queue.to_list(items)
+          |> Enum.reduce(state.in_progress, fn item, acc ->
+            spawn_crawl(item, state.job_id)
+            url = if is_map(item), do: item[:url], else: item
+            MapSet.put(acc, url)
+          end)
+
+        state
+        |> Map.put(:pending_queue, remaining_queue)
+        |> Map.put(:in_progress, new_in_progress)
+      else
+        state
+      end
     end
   end
 
   defp spawn_crawl(url_data, _job_id) do
-    # Spawn async task for crawling
-    Task.Supervisor.start_child(AONCrawler.Crawler.TaskSupervisor, fn ->
-      url = if is_map(url_data), do: url_data[:url], else: url_data
-      metadata = if is_map(url_data), do: Map.drop(url_data, [:url]), else: %{}
+    url = if is_map(url_data), do: url_data[:url], else: url_data
+    metadata = if is_map(url_data), do: Map.drop(url_data, [:url]), else: %{}
 
+    # Start task directly instead of via TaskSupervisor to avoid startup issues
+    spawn(fn ->
       result =
-        with :ok <- RateLimiter.wait_for_slot(),
-             {:ok, response} <- Worker.crawl(url),
-             {:ok, content} <- Worker.parse(response, metadata) do
-          {:ok, content}
-        else
+        case Worker.execute(%{id: UUID.uuid4(), url: url}) do
+          {:ok, response} -> {:ok, response}
           {:error, reason} -> {:error, reason}
+          {:retry, reason} -> {:error, reason}
           error -> {:error, error}
         end
 

@@ -41,7 +41,7 @@ defmodule Mix.Tasks.LoadAon do
         aliases: [f: :file, c: :chunk_size, o: :overlap]
       )
 
-    file = Keyword.get(opts, :file, "aon_docs.jsonl")
+    file = Keyword.get(opts, :file, "data/documents.json")
     chunk_size = Keyword.get(opts, :chunk_size, @chunk_size)
     overlap = Keyword.get(opts, :overlap, @overlap)
 
@@ -56,7 +56,7 @@ defmodule Mix.Tasks.LoadAon do
       IO.puts("Database already has #{stats.documents} documents, #{stats.chunks} chunks")
       response = IO.gets("Load again? (y/N): ")
 
-      if String.downcase(String.trim(response)) != "y" do
+      if response == :eof || String.downcase(String.trim(response)) != "y" do
         IO.puts("Skipping load.")
         :ok
       else
@@ -95,17 +95,38 @@ defmodule Mix.Tasks.LoadAon do
       |> Stream.reject(&is_nil/1)
       |> Enum.to_list()
 
-    IO.puts("Parsed #{length(documents)} documents")
+    IO.puts("Parsed #{length(documents)} entries")
+
+    # Aggregate chunks back into full documents by URL
+    IO.puts("Aggregating documents by URL...")
+
+    aggregated_docs =
+      documents
+      |> Enum.group_by(& &1["url"])
+      |> Enum.map(fn {url, docs} ->
+        text = Enum.map_join(docs, "\n", fn d -> d["text"] || "" end)
+        first = List.first(docs)
+
+        %{
+          "url" => url,
+          "source" => first["source"] || "",
+          "title" => first["title"] || "",
+          "text" => text
+        }
+      end)
+      |> Enum.to_list()
+
+    IO.puts("Aggregated into #{length(aggregated_docs)} unique documents")
 
     # Save documents
     IO.puts("Saving documents...")
-    Enum.each(documents, &AONCrawler.DB.save_document/1)
+    Enum.each(aggregated_docs, &AONCrawler.DB.save_document/1)
 
     # Chunk documents
     IO.puts("Chunking documents...")
 
     chunks =
-      documents
+      aggregated_docs
       |> Stream.flat_map(fn doc ->
         chunk_text(doc["text"] || "", doc["url"] || "", chunk_size, overlap)
       end)

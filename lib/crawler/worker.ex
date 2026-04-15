@@ -133,7 +133,7 @@ defmodule AONCrawler.Crawler.Worker do
 
     case Req.get(url, headers: headers) do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
-        {:ok, %{status: status, body: body}}
+        {:ok, %{status: status, body: body, url: url}}
 
       {:ok, %{status: status}} ->
         {:error, :http_error, status}
@@ -238,8 +238,10 @@ defmodule AONCrawler.Crawler.Worker do
   defp validate_response(_), do: {:error, :invalid_response}
 
   defp extract_main_content(document) do
-    # Try various selectors for main content
     content_selectors = [
+      "#main",
+      "#ctl00_MainContent_DetailedOutput",
+      ".main",
       ".main-content",
       "#content",
       "article.content",
@@ -270,13 +272,18 @@ defmodule AONCrawler.Crawler.Worker do
     |> Enum.map(fn element ->
       case Floki.attribute(element, "href") do
         [href | _] ->
-          full_url = resolve_url(href, base_url)
-          text = Floki.text(element) |> String.trim()
+          case resolve_url(href, base_url) do
+            nil ->
+              nil
 
-          if String.starts_with?(full_url, base_host) and valid_aon_path?(full_url) do
-            %{url: full_url, text: text}
-          else
-            nil
+            full_url ->
+              text = Floki.text(element) |> String.trim()
+
+              if String.starts_with?(full_url, base_host) and valid_aon_path?(full_url) do
+                %{url: full_url, text: text}
+              else
+                nil
+              end
           end
 
         _ ->
@@ -307,38 +314,57 @@ defmodule AONCrawler.Crawler.Worker do
   end
 
   defp resolve_url(href, base_url) do
-    base_uri = URI.parse(base_url)
+    href = to_string(href) |> String.trim()
 
-    case URI.parse(href) do
-      %{scheme: nil, host: nil} ->
-        # Relative URL
-        base_uri
-        |> Map.put(:path, Path.join(Path.dirname(base_uri.path || "/"), href))
-        |> Map.delete(:fragment)
-        |> URI.to_string()
-        |> String.trim_trailing("/")
+    cond do
+      href == "" or href == "#" ->
+        nil
 
-      _ ->
+      String.starts_with?(href, "javascript:") ->
+        nil
+
+      String.starts_with?(href, "mailto:") ->
+        nil
+
+      String.starts_with?(href, "http://") or String.starts_with?(href, "https://") ->
         href
-        |> String.trim()
-        |> String.trim_trailing("/")
+
+      String.starts_with?(href, "//") ->
+        "https:" <> href
+
+      true ->
+        base_uri = URI.parse(base_url)
+        base_path = base_uri.path || "/"
+        base_dir = Path.dirname(base_path)
+        new_path = Path.join(base_dir, href)
+        new_path = if String.ends_with?(href, "/"), do: new_path <> "/", else: new_path
+        "https://#{base_uri.host}#{new_path}"
     end
+    |> then(fn
+      nil -> nil
+      url -> String.trim_trailing(url, "/")
+    end)
+  rescue
+    e ->
+      Logger.error("resolve_url exception",
+        href: inspect(href),
+        base_url: base_url,
+        error: Exception.message(e)
+      )
+
+      nil
   end
 
   defp valid_aon_path?(url) do
-    valid_paths = [
-      "Actions.aspx",
-      "Spells.aspx",
-      "Feats.aspx",
-      "Traits.aspx",
-      "Rules.aspx",
-      "Equipment.aspx",
-      "Monsters.aspx",
-      "Conditions.aspx",
-      "Hazards.aspx"
+    exclude_pages = [
+      "Licenses.aspx",
+      "Support.aspx",
+      "ContactUs.aspx",
+      "Contributors.aspx"
     ]
 
-    Enum.any?(valid_paths, &String.contains?(url, &1))
+    String.starts_with?(url, "https://2e.aonprd.com/") and
+      not Enum.any?(exclude_pages, &String.contains?(url, &1))
   end
 
   defp extract_host(url) do
