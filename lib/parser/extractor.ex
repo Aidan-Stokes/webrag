@@ -52,8 +52,6 @@ defmodule AONCrawler.Parser.Extractor do
   use GenServer
   require Logger
 
-  alias AONCrawler.Types
-
   # ============================================================================
   # Client API
   # ============================================================================
@@ -87,7 +85,7 @@ defmodule AONCrawler.Parser.Extractor do
       iex> content.type
       :spell
   """
-  @spec extract(String.t(), String.t(), keyword()) :: {:ok, Types.t()} | {:error, term()}
+  @spec extract(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def extract(html, url, opts \\ []) when is_binary(html) and is_binary(url) do
     case GenServer.call(__MODULE__, {:extract, html, url, opts}) do
       {:ok, content} -> {:ok, content}
@@ -100,7 +98,7 @@ defmodule AONCrawler.Parser.Extractor do
 
   Useful for batch processing where you don't want GenServer overhead.
   """
-  @spec extract_sync(String.t(), String.t(), keyword()) :: {:ok, Types.t()} | {:error, term()}
+  @spec extract_sync(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def extract_sync(html, url, opts \\ []) do
     content_type = Keyword.get(opts, :type) || detect_content_type(url)
 
@@ -108,17 +106,14 @@ defmodule AONCrawler.Parser.Extractor do
          {:ok, name} <- extract_name(cleaned_html, content_type),
          {:ok, text} <- extract_text(cleaned_html, content_type),
          {:ok, metadata} <- extract_metadata(cleaned_html, content_type, url) do
-      content =
-        Types.new_rule_content(
-          type: content_type,
-          name: name,
-          text: text,
-          source_url: url,
-          raw_html: html,
-          metadata: metadata
-        )
-
-      {:ok, content}
+      {:ok,
+       %{
+         type: content_type,
+         name: name,
+         text: text,
+         source_url: url,
+         metadata: metadata
+       }}
     end
   end
 
@@ -128,7 +123,7 @@ defmodule AONCrawler.Parser.Extractor do
   More efficient than calling extract/3 multiple times.
   """
   @spec extract_batch([{String.t(), String.t()}], keyword()) :: [
-          {:ok, Types.t()} | {:error, term()}
+          {:ok, map()} | {:error, term()}
         ]
   def extract_batch(documents, opts \\ []) when is_list(documents) do
     documents
@@ -233,7 +228,7 @@ defmodule AONCrawler.Parser.Extractor do
 
       cleaned =
         parsed
-        |> Floki.traverse(fn
+        |> Floki.traverse_and_update(fn
           {"script", _, _} ->
             nil
 
@@ -873,18 +868,7 @@ defmodule AONCrawler.Parser.Extractor do
             nil
 
           header ->
-            # Get all siblings after this header until the next header
-            {_, siblings} = Floki.next_siblings(html_tree, header)
-
-            siblings
-            |> Enum.take_while(fn
-              {"h2", _, _} -> false
-              {"h3", _, _} -> false
-              {"h4", _, _} -> false
-              _ -> true
-            end)
-            |> Floki.text()
-            |> clean_text()
+            Floki.text(header) |> String.trim()
         end
 
       _ ->

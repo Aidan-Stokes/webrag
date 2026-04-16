@@ -110,8 +110,8 @@ defmodule AONCrawler.Retriever.SearchService do
           {:ok, String.t(), [Types.search_result()]} | {:error, term()}
   def search_with_context(query, opts \\ []) do
     case search(query, opts) do
-      {:ok, results} when length(results) == 0 ->
-        {:ok, "", results}
+      {:ok, []} ->
+        {:ok, "", []}
 
       {:ok, results} ->
         context = pack_context(results)
@@ -160,7 +160,7 @@ defmodule AONCrawler.Retriever.SearchService do
   # ============================================================================
 
   @impl true
-  def init(opts) do
+  def init(_opts) do
     state = %{
       total_queries: 0,
       successful_queries: 0,

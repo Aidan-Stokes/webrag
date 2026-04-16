@@ -5,7 +5,7 @@ defmodule AONCrawler.API.Controller do
   Handles HTTP requests and delegates to appropriate services.
   """
 
-  use Phoenix.Controller
+  use Phoenix.Controller, formats: [:json]
   require Logger
 
   alias AONCrawler.LLM.Client

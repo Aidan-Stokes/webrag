@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package aoncrawler;
+
+message Document {
+  string id = 1;
+  string url = 2;
+  string text = 3;
+  string content_type = 4;
+  map<string, string> metadata = 5;
+  int64 timestamp = 6;
+}
+
+message Chunk {
+  string id = 1;
+  string document_id = 2;
+  string text = 3;
+  int32 index = 4;
+  int32 total = 5;
+  map<string, string> metadata = 6;
+}
+
+message Embedding {
+  string id = 1;
+  string chunk_id = 2;
+  repeated float vector = 3;
+  string model = 4;
+  int32 token_count = 5;
+}
+
+message UrlList {
+  repeated string urls = 1;
+}
+
+message DiscoveredUrl {
+  string url = 1;
+  int64 discovered_at = 2;
+}
+
+message DiscoveredUrls {
+  repeated DiscoveredUrl urls = 1;
+}

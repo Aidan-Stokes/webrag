@@ -11,28 +11,30 @@ defmodule AONCrawler.Search do
   @spec search(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
   def search(query, opts \\ []) do
     top_k = Keyword.get(opts, :top_k, 5)
-    # Lowered threshold
     min_score = Keyword.get(opts, :min_score, 0.3)
 
-    # Check for embeddings
-    embeddings = AONCrawler.DB.get_embeddings_with_chunks()
+    embeddings = AONCrawler.Storage.load_embeddings()
+    chunks = AONCrawler.Storage.load_chunks()
 
     if length(embeddings) == 0 do
-      IO.puts("No embeddings found. Run: mix gen_embeddings")
+      IO.puts("No embeddings found. Run: mix embed")
       {:ok, []}
     else
-      # Generate query embedding
+      chunk_map = Enum.into(chunks, %{}, fn c -> {c.id, c} end)
+
       case AONCrawler.LLM.Ollama.embed(query) do
         {:ok, query_vector} ->
-          # Calculate similarities
           results =
             embeddings
             |> Enum.map(fn emb ->
-              score = cosine_similarity(query_vector, emb["vector"])
-              Map.put(emb, "score", score)
+              chunk = Map.get(chunk_map, emb.chunk_id, %{})
+              text = Map.get(chunk, :text, "") || ""
+
+              score = cosine_similarity(query_vector, emb.vector)
+              Map.put(emb, :score, score) |> Map.put(:text, text)
             end)
-            |> Enum.filter(fn emb -> emb["score"] >= min_score end)
-            |> Enum.sort_by(fn emb -> emb["score"] end, :desc)
+            |> Enum.filter(fn emb -> emb.score >= min_score end)
+            |> Enum.sort_by(fn emb -> emb.score end, :desc)
             |> Enum.take(top_k)
 
           {:ok, results}
@@ -43,7 +45,6 @@ defmodule AONCrawler.Search do
     end
   end
 
-  # Cosine similarity between two vectors
   defp cosine_similarity(vec1, vec2) do
     dot = dot_product(vec1, vec2)
     mag1 = magnitude(vec1)

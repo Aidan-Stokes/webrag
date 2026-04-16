@@ -85,7 +85,7 @@ defmodule AONCrawler.Repo do
     |> where([d], is_nil(d.processed_at))
     |> order_by(asc: :inserted_at)
     |> limit(^limit)
-    |> Repo.all()
+    |> __MODULE__.all()
   end
 
   @doc """
@@ -101,7 +101,7 @@ defmodule AONCrawler.Repo do
     |> where([c, e], is_nil(e.id))
     |> order_by(asc: :inserted_at)
     |> limit(^limit)
-    |> Repo.all()
+    |> __MODULE__.all()
   end
 
   @doc """
@@ -124,7 +124,7 @@ defmodule AONCrawler.Repo do
       LIMIT $3
     """
 
-    case Repo.query(sql, [query_embedding, similarity_threshold, top_k]) do
+    case __MODULE__.query(sql, [query_embedding, similarity_threshold, top_k]) do
       {:ok, %{rows: rows, columns: cols}} ->
         rows
         |> Enum.map(fn row ->
@@ -155,7 +155,7 @@ defmodule AONCrawler.Repo do
     AONCrawler.Chunk
     |> where([c], ilike(c.content, ^pattern))
     |> limit(^top_k)
-    |> Repo.all()
+    |> __MODULE__.all()
   end
 
   @doc """
@@ -165,7 +165,7 @@ defmodule AONCrawler.Repo do
   def mark_document_processed(document_id, processed_at \\ DateTime.utc_now()) do
     AONCrawler.Document
     |> where(id: ^document_id)
-    |> Repo.update_all(set: [processed_at: processed_at, updated_at: DateTime.utc_now()])
+    |> __MODULE__.update_all(set: [processed_at: processed_at, updated_at: DateTime.utc_now()])
     |> case do
       {1, [document]} -> {:ok, document}
       {0, []} -> {:error, :not_found}
@@ -181,7 +181,7 @@ defmodule AONCrawler.Repo do
   def get_or_create_crawl_job(url, opts \\ []) do
     job_type = Keyword.get(opts, :type, :incremental)
 
-    case Repo.get_by(AONCrawler.CrawlJob, url: url) do
+    case __MODULE__.get_by(AONCrawler.CrawlJob, url: url) do
       nil ->
         %AONCrawler.CrawlJob{
           url: url,
@@ -189,7 +189,7 @@ defmodule AONCrawler.Repo do
           job_type: job_type
         }
         |> AONCrawler.CrawlJob.create_changeset(%{})
-        |> Repo.insert()
+        |> __MODULE__.insert()
 
       existing_job ->
         {:ok, existing_job}
@@ -212,7 +212,7 @@ defmodule AONCrawler.Repo do
     result =
       AONCrawler.CrawlJob
       |> where(id: ^job_id)
-      |> Repo.update_all(set: updates)
+      |> __MODULE__.update_all(set: updates)
 
     case result do
       {1, _} -> :ok
@@ -249,11 +249,11 @@ defmodule AONCrawler.Repo do
         AONCrawler.CrawlJob
         |> where(status: ^status)
         |> select(count())
-        |> Repo.one()
+        |> __MODULE__.one()
 
       Map.put(acc, status, count)
     end)
-    |> Map.put(:total, Repo.aggregate(AONCrawler.CrawlJob, :count, :id))
+    |> Map.put(:total, __MODULE__.aggregate(AONCrawler.CrawlJob, :count, :id))
   end
 
   @doc """
@@ -269,13 +269,13 @@ defmodule AONCrawler.Repo do
       |> offset(^keep_last_n)
       |> limit(1)
       |> select([j], j.id)
-      |> Repo.one()
+      |> __MODULE__.one()
 
     if cutoff_id do
       {deleted, _} =
         AONCrawler.CrawlJob
         |> where([j], j.id < ^cutoff_id)
-        |> Repo.delete_all()
+        |> __MODULE__.delete_all()
 
       {:ok, deleted}
     else
@@ -289,7 +289,7 @@ defmodule AONCrawler.Repo do
   """
   @spec run_transaction(fun()) :: {:ok, term()} | {:error, term()}
   def run_transaction(fun) when is_function(fun, 0) do
-    Repo.transaction(fun)
+    __MODULE__.transaction(fun)
   end
 
   @doc """
@@ -310,6 +310,6 @@ defmodule AONCrawler.Repo do
     })
     |> order_by(desc: :inserted_at)
     |> limit(^limit)
-    |> Repo.all()
+    |> __MODULE__.all()
   end
 end

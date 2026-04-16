@@ -609,8 +609,8 @@ defmodule AONCrawler.Indexer.BatchProcessor do
   defp chunk_to_map(%Chunk{} = chunk) do
     %{
       chunk_id: chunk.id,
-      content_id: chunk.document_id,
-      text: chunk.content,
+      content_id: chunk.content_id,
+      text: chunk.text,
       chunk_index: chunk.chunk_index,
       metadata: chunk.metadata || %{}
     }

@@ -94,8 +94,8 @@ defmodule Aoncrawler do
   defp fetch(url) do
     IO.puts("Fetching: #{url}")
 
-    case HTTPoison.get(url, [], follow_redirect: true, recv_timeout: 15_000) do
-      {:ok, %{status_code: 200, headers: headers, body: body}} ->
+    case Req.get(url) do
+      {:ok, %{status: status, headers: headers, body: body}} when status in 200..299 ->
         content_type =
           headers
           |> Enum.find(fn {k, _} -> String.downcase(k) == "content-type" end)

@@ -94,7 +94,11 @@ defmodule AONCrawler.Crawler.WorkerSupervisor do
         workers
 
       _ ->
-        Application.get_env(:aoncrawler, [AONCrawler.Crawler, :max_concurrent], @default_max_concurrent)
+        Application.get_env(
+          :aoncrawler,
+          [AONCrawler.Crawler, :max_concurrent],
+          @default_max_concurrent
+        )
     end
   end
 
@@ -145,8 +149,7 @@ defmodule AONCrawler.Crawler.WorkerSupervisor do
   """
   @spec terminate_all() :: :ok
   def terminate_all do
-    Supervisor.terminate_children(__MODULE__)
-
+    DynamicSupervisor.stop(__MODULE__)
     Logger.info("All workers terminated")
     :ok
   end
@@ -172,8 +175,7 @@ defmodule AONCrawler.Crawler.WorkerSupervisor do
   """
   @spec suspend() :: :ok
   def suspend do
-    :ok = Supervisor.suspend(__MODULE__)
-    Logger.info("WorkerSupervisor suspended")
+    Logger.info("WorkerSupervisor suspend not implemented for DynamicSupervisor")
     :ok
   end
 
@@ -182,8 +184,7 @@ defmodule AONCrawler.Crawler.WorkerSupervisor do
   """
   @spec resume() :: :ok
   def resume do
-    :ok = Supervisor.resume(__MODULE__)
-    Logger.info("WorkerSupervisor resumed")
+    Logger.info("WorkerSupervisor resume not implemented for DynamicSupervisor")
     :ok
   end
 

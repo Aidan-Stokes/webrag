@@ -120,11 +120,8 @@ defmodule AONCrawler.Crawler.Worker do
   """
   @spec fetch_url(String.t(), map()) :: {:ok, map()} | {:error, term()}
   def fetch_url(url, _request \\ %{}) do
-    timeout = Application.get_env(:aoncrawler, [AONCrawler.Crawler, :request_timeout], 30_000)
-
     headers = [
-      {"User-Agent",
-       Application.get_env(:aoncrawler, [AONCrawler.Crawler, :user_agent], "AONCrawler/1.0")},
+      {"User-Agent", Application.get_env(:aoncrawler, :user_agent, "AONCrawler/1.0")},
       {"Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
       {"Accept-Language", "en-US,en;q=0.5"},
       {"Accept-Encoding", "gzip, deflate"},
@@ -224,7 +221,8 @@ defmodule AONCrawler.Crawler.Worker do
     RateLimiter.wait_for_token()
     :ok
   rescue
-    e in GenServer.CallError ->
+    e ->
+      Logger.warning("Rate limiter error", error: Exception.message(e))
       {:error, :rate_limit_timeout}
   end
 
@@ -324,6 +322,18 @@ defmodule AONCrawler.Crawler.Worker do
         nil
 
       String.starts_with?(href, "mailto:") ->
+        nil
+
+      String.contains?(href, "__doPostBack") ->
+        nil
+
+      String.contains?(href, "void(") ->
+        nil
+
+      String.contains?(href, "@") and not String.contains?(href, "://") ->
+        nil
+
+      String.contains?(href, "(") or String.contains?(href, ";") ->
         nil
 
       String.starts_with?(href, "http://") or String.starts_with?(href, "https://") ->

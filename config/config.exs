@@ -1,5 +1,7 @@
 import Config
 
+import_config "sources.exs"
+
 config :aoncrawler,
   ecto_repos: [AONCrawler.Repo],
   generators: [timestamp_type: :utc_datetime]
@@ -12,16 +14,23 @@ config :logger, :console,
   format: "$time $metadata[$level] $message\n",
   metadata: [:request_id]
 
+config :aoncrawler,
+  max_concurrent: System.schedulers_online()
+
 config :aoncrawler, AONCrawler.Crawler,
-  max_concurrent: 20,
-  rate_limit: 10,
+  rate_limit: 50,
+  burst_size: 25,
   request_timeout: 30_000,
-  user_agent: "AONCrawler/1.0 (Pathfinder 2e Rules RAG)"
+  user_agent: "AONCrawler/1.0"
+
+config :aoncrawler, :crawler_rate_limit, 5
+config :aoncrawler, :crawler_burst_size, 3
 
 config :aoncrawler, AONCrawler.Indexer,
   embedding_model: "text-embedding-3-small",
   embedding_dimensions: 1536,
-  batch_size: 100
+  batch_size: 100,
+  max_concurrent_batches: System.schedulers_online()
 
 config :aoncrawler, AONCrawler.LLM,
   model: "gpt-4-turbo",

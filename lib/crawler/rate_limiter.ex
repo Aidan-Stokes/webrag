@@ -44,8 +44,6 @@ defmodule AONCrawler.Crawler.RateLimiter do
   use GenServer, restart: :permanent
   require Logger
 
-  alias __MODULE__
-
   # ============================================================================
   # Client API
   # ============================================================================

@@ -39,9 +39,12 @@ defmodule AONCrawler.Crawler.Coordinator do
   """
 
   use GenServer
-  use Supervisor
 
   require Logger
+  alias AONCrawler.Storage
+  alias AONCrawler.Crawler.Worker
+
+  @default_max_retries 3
 
   # ============================================================================
   # Client API
@@ -305,13 +308,18 @@ defmodule AONCrawler.Crawler.Coordinator do
 
   @impl true
   def handle_call(:get_stats, _from, state) do
-    pending_count = :queue.len(state.pending_queue)
+    unique_pending =
+      :queue.to_list(state.pending_queue)
+      |> Enum.map(&get_url/1)
+      |> MapSet.new()
+      |> MapSet.size()
+
     in_progress_count = MapSet.size(state.in_progress)
 
     stats = %{
       status: state.status,
       job_id: state.job_id,
-      pending: pending_count,
+      pending: unique_pending,
       in_progress: in_progress_count,
       completed: MapSet.size(state.completed),
       failed: MapSet.size(state.failed),
@@ -443,13 +451,17 @@ defmodule AONCrawler.Crawler.Coordinator do
           )
 
           doc = %{
-            "url" => url,
-            "title" => content.metadata.title,
-            "text" => content.content,
-            "source" => "2e.aonprd.com"
+            id: UUID.uuid4(),
+            url: url,
+            text: content.content || "",
+            content_type: get_in(content, [:metadata, :content_type]) || "unknown",
+            metadata: %{
+              title: content.metadata[:title] || content.metadata["title"] || "",
+              source: content.metadata[:source] || content.metadata["source"] || "unknown"
+            }
           }
 
-          Database.save_crawled_document(doc)
+          Storage.append_document(doc)
 
           # Add new URLs to the queue directly
           new_urls =
@@ -479,7 +491,7 @@ defmodule AONCrawler.Crawler.Coordinator do
           new_state_with_queue
 
         {:error, reason} ->
-          Logger.warning("Crawl failed", url: url, reason: inspect(reason))
+          Logger.warning("Crawl failed: #{inspect(reason)}", url: url)
 
           state
           |> Map.put(:in_progress, new_in_progress)
@@ -569,8 +581,8 @@ defmodule AONCrawler.Crawler.Coordinator do
         new_in_progress =
           :queue.to_list(items)
           |> Enum.reduce(state.in_progress, fn item, acc ->
+            url = get_url(item)
             spawn_crawl(item, state.job_id)
-            url = if is_map(item), do: item[:url], else: item
             MapSet.put(acc, url)
           end)
 
@@ -583,22 +595,39 @@ defmodule AONCrawler.Crawler.Coordinator do
     end
   end
 
+  defp get_url(%{url: url}), do: url
+  defp get_url(%{} = map), do: Map.get(map, :url) || Map.get(map, "url")
+  defp get_url(url), do: url
+
   defp spawn_crawl(url_data, _job_id) do
-    url = if is_map(url_data), do: url_data[:url], else: url_data
-    metadata = if is_map(url_data), do: Map.drop(url_data, [:url]), else: %{}
+    url = get_url(url_data)
+    max_retries = @default_max_retries
 
-    # Start task directly instead of via TaskSupervisor to avoid startup issues
     spawn(fn ->
-      result =
-        case Worker.execute(%{id: UUID.uuid4(), url: url}) do
-          {:ok, response} -> {:ok, response}
-          {:error, reason} -> {:error, reason}
-          {:retry, reason} -> {:error, reason}
-          error -> {:error, error}
-        end
-
+      result = execute_with_retry(%{id: UUID.uuid4(), url: url}, max_retries)
       GenServer.cast(__MODULE__, {:crawl_complete, url, result})
     end)
+  end
+
+  defp execute_with_retry(request, retries_left) do
+    case Worker.execute(request) do
+      {:ok, _} = result ->
+        result
+
+      {:retry, _error} when retries_left > 0 ->
+        Process.sleep(3000)
+        execute_with_retry(request, retries_left - 1)
+
+      {:retry, error} ->
+        Logger.warning("Max retries exceeded", url: request.url)
+        {:error, error}
+
+      {:error, _} = result ->
+        result
+
+      other ->
+        {:error, other}
+    end
   end
 
   defp parse_seeds(seeds, opts) do

@@ -109,7 +109,7 @@ defmodule AONCrawler.LLM.Client do
     top_k = Keyword.get(opts, :top_k, @default_top_k)
     min_score = Keyword.get(opts, :min_score, 0.7)
 
-    with {:ok, context, results} <-
+    with {:ok, context, _results} <-
            SearchService.search_with_context(question, top_k: top_k, min_score: min_score),
          {:ok, context} <- build_context(question, context) do
       call_llm(context, model: model, temperature: temperature, max_tokens: max_tokens)
@@ -160,7 +160,7 @@ defmodule AONCrawler.LLM.Client do
   # ============================================================================
 
   @impl true
-  def init(opts) do
+  def init(_opts) do
     state = %{
       total_queries: 0,
       successful_queries: 0,
@@ -214,7 +214,7 @@ defmodule AONCrawler.LLM.Client do
   # Private Functions
   # ============================================================================
 
-  defp build_context(question, context) when context == "" or context == nil do
+  defp build_context(_question, context) when context == "" or context == nil do
     {:ok,
      """
      The question cannot be answered based on the available rules content.

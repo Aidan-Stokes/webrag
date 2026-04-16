@@ -35,7 +35,6 @@ defmodule AONCrawler.Indexer.EmbeddingClient do
 
   @default_model "text-embedding-3-small"
   @max_batch_size 100
-  @max_tokens_per_request 8_192
 
   @doc """
   Generates an embedding for a single text.
@@ -163,7 +162,7 @@ defmodule AONCrawler.Indexer.EmbeddingClient do
       {:error, :not_configured}
     end
   rescue
-    e in KeyError ->
+    _e in KeyError ->
       {:error, :not_configured}
 
     e ->
@@ -189,7 +188,7 @@ defmodule AONCrawler.Indexer.EmbeddingClient do
       {:error, :not_configured}
     end
   rescue
-    e in KeyError ->
+    _e in KeyError ->
       {:error, :not_configured}
 
     e ->

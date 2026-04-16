@@ -44,6 +44,7 @@ defmodule Aoncrawler.MixProject do
 
       # Utilities
       {:uuid, "~> 1.1"},
+      {:protobuf, "~> 0.13"},
 
       # Testing
       {:mox, "~> 1.1", only: :test},

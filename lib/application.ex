@@ -120,9 +120,12 @@ defmodule AONCrawler.Application do
       rate_limit =
         Application.get_env(:aoncrawler, :crawler_rate_limit, 10)
 
+      burst_size =
+        Application.get_env(:aoncrawler, :crawler_burst_size, 25)
+
       [
         # Rate limiter to respect source server
-        {AONCrawler.Crawler.RateLimiter, rate_limit: rate_limit},
+        {AONCrawler.Crawler.RateLimiter, rate_limit: rate_limit, burst_size: burst_size},
         # Worker pool supervisor
         {AONCrawler.Crawler.WorkerSupervisor, max_concurrent: max_concurrent},
         # Main crawler coordinator
