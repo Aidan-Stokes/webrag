@@ -1,8 +1,11 @@
 defmodule WebRAG.Search do
+  @moduledoc """
+  Hybrid search combining vector similarity and keyword matching.
+  """
   @default_top_k 5
   @default_min_score 0.1
   @default_max_per_doc 5
-  @keyword_weight 0.7
+  @keyword_weight 0.3
 
   @stopwords ~w(the a an is are was were be been being have has had do does did will would could should may might must shall can this that these those what when where why how who which for from of and or not but with into onto about above below under over after before between during through because)
 
@@ -11,48 +14,53 @@ defmodule WebRAG.Search do
     min_score = Keyword.get(opts, :min_score, @default_min_score)
     max_per_doc = Keyword.get(opts, :max_per_doc, @default_max_per_doc)
 
-    embeddings = WebRAG.Storage.load_embeddings()
     chunks = WebRAG.Storage.load_chunks()
+    chunk_map = Enum.reduce(chunks, %{}, fn c, acc -> Map.put(acc, c.id, c) end)
 
-    if length(embeddings) == 0 do
-      IO.puts("No embeddings found. Run: mix embed")
-      {:ok, []}
-    else
-      idf = load_idf_terms()
+    if WebRAG.Indexer.VectorStore.loaded?() == false do
+      WebRAG.Indexer.VectorStore.load_embeddings()
+    end
 
-      case WebRAG.LLM.Ollama.embed(query) do
-        {:ok, qv} ->
-          kw = extract_keywords(query)
+    case WebRAG.LLM.Ollama.embed(query) do
+      {:ok, qv} ->
+        kw = extract_keywords(query)
+        idf = load_idf_terms()
 
-          results =
-            Enum.map(embeddings, fn emb ->
-              ch = Enum.find(chunks, fn c -> c.id == emb.chunk_id end)
-              txt = if ch, do: ch.text, else: ""
-              doc_id = if ch, do: ch.document_id, else: ""
-              ds = cosine(qv, emb.vector)
-              ts = tfidf(txt, kw, idf)
-              sc = hybrid(ds, ts)
+        case WebRAG.Indexer.VectorStore.search(qv, top_k: top_k * 3, min_score: min_score * 0.5) do
+          [] ->
+            {:ok, []}
 
-              %{
-                score: sc,
-                embed_score: ds,
-                keyword_score: ts,
-                text: txt,
-                chunk_id: emb.chunk_id,
-                document_id: doc_id,
-                metadata: %{}
-              }
-            end)
+          vector_results ->
+            results =
+              Enum.map(vector_results, fn vr ->
+                chunk = Map.get(chunk_map, vr.chunk_id)
+                txt = if chunk, do: chunk.text, else: ""
+                doc_id = if chunk, do: chunk.document_id, else: ""
+                ts = tfidf(txt, kw, idf)
 
-          filtered = Enum.filter(results, fn r -> r.score >= min_score end)
-          sorted = Enum.sort_by(filtered, fn r -> r.score end, :desc)
-          limited = Enum.take(sorted, top_k * 3)
-          final = diverse_results(limited, top_k, max_per_doc)
-          {:ok, final}
+                %{
+                  score: (1 - @keyword_weight) * vr.score + @keyword_weight * ts,
+                  embed_score: vr.score,
+                  keyword_score: ts,
+                  text: txt,
+                  chunk_id: vr.chunk_id,
+                  document_id: doc_id,
+                  metadata: %{}
+                }
+              end)
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+            filtered = Enum.filter(results, fn r -> r.score >= min_score end)
+            sorted = Enum.sort_by(filtered, fn r -> r.score end, :desc)
+            limited = Enum.take(sorted, top_k * 3)
+            final = diverse_results(limited, top_k, max_per_doc)
+            {:ok, final}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -106,15 +114,8 @@ defmodule WebRAG.Search do
         end
       end)
 
-    bonus =
-      if String.contains?(tl, "dwarf") and String.contains?(tl, "language") do
-        3.0
-      else
-        0.0
-      end
-
     max_kw = length(kw) * 5.0
-    min((base + bonus) / max_kw * 1.5, 1.0)
+    min(base / max_kw * 1.5, 1.0)
   end
 
   defp stem_variants(w) do
