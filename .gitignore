@@ -21,4 +21,4 @@ erl_crash.dump
 *.ez
 
 # Ignore package tarball (built via "mix hex.build").
-aoncrawler-*.tar
+webrag-*.tar

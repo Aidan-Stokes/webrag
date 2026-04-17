@@ -1,20 +1,22 @@
-defmodule Aoncrawler.MixProject do
+defmodule WebRAG.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :aoncrawler,
+      app: :webrag,
       version: "0.1.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      description: "Web crawler for building RAG datasets with vector embeddings",
+      package: package(),
       deps: deps()
     ]
   end
 
   def application do
     [
-      mod: {AONCrawler.Application, []},
+      mod: {WebRAG.Application, []},
       extra_applications: [:logger, :runtime_tools]
     ]
   end
@@ -44,11 +46,19 @@ defmodule Aoncrawler.MixProject do
 
       # Utilities
       {:uuid, "~> 1.1"},
-      {:protobuf, "~> 0.13"},
+      {:protobuf, "~> 0.13"}
+    ]
+  end
 
-      # Testing
-      {:mox, "~> 1.1", only: :test},
-      {:stream_data, "~> 0.6", only: :test}
+  defp package do
+    [
+      name: :webrag,
+      files: ["lib", "mix.exs", "README.md", "LICENSE"],
+      maintainers: ["WebRAG Contributors"],
+      licenses: ["MIT"],
+      links: %{
+        "GitHub" => "https://github.com/Aidan-Stokes/webrag"
+      }
     ]
   end
 end

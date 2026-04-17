@@ -1,14 +1,15 @@
-# AONCrawler
+# WebRAG
 
 A multi-source web crawler for building RAG (Retrieval-Augmented Generation) datasets from any website.
 
 ## What It Does
 
-AONCrawler discovers and crawls URLs from configured or custom sources, extracts content, generates embeddings, and enables semantic search. It supports:
+WebRAG discovers and crawls URLs from configured or custom sources, extracts content, generates embeddings, and enables semantic search. It supports:
 
 - **Multiple sources**: Pre-configured sources or define your own
 - **Scope control**: Only crawls URLs within allowed domains, preventing accidental crawling of unrelated sites
 - **Parallel processing**: Concurrent crawling with configurable worker count (auto-detects CPU threads)
+- **Progress tracking**: Real-time progress bars for all pipeline stages
 - **Protocol Buffers**: Fast binary serialization for production pipelines
 - **RAG pipeline**: Extracts text, chunks content, generates embeddings, and enables semantic search
 
@@ -16,8 +17,8 @@ AONCrawler discovers and crawls URLs from configured or custom sources, extracts
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/aoncrawler.git
-cd aoncrawler
+git clone https://github.com/your-org/webrag.git
+cd webrag
 
 # Install dependencies
 mix deps.get
@@ -28,15 +29,15 @@ mix compile
 
 ## Pipeline
 
-AONCrawler uses a separate command for each stage of the pipeline:
+WebRAG uses a separate command for each stage of the pipeline:
 
 ```bash
 mix discover    # 1. Find all URLs within scope
-mix crawl       # 2. Crawl discovered URLs
-mix index        # 3. Chunk documents
-mix embed        # 4. Generate vector embeddings
-mix compact      # 5. Export .pb files to JSON for debugging
-mix query "..."  # 6. Semantic search
+mix crawl      # 2. Crawl discovered URLs
+mix index      # 3. Chunk documents
+mix embed      # 4. Generate vector embeddings
+mix compact    # 5. Export .pb files to JSON for debugging
+mix query "?"   # 6. Semantic search
 ```
 
 ## Commands
@@ -72,7 +73,7 @@ mix discover --base-url https://example.com --domains example.com,www.example.co
 
 ### `mix crawl`
 
-Crawls discovered URLs and extracts content.
+Crawls discovered URLs and extracts content with real-time progress tracking.
 
 ```bash
 mix crawl [options]
@@ -82,6 +83,7 @@ mix crawl [options]
 |--------|-------------|
 | `--source <name>` | Source ID from config. Defaults to first source. |
 | `--max <n>` | Maximum pages to crawl. Default: unlimited. |
+| `--verbose` | Show all log messages (warnings, retries). |
 
 #### Examples
 
@@ -128,7 +130,7 @@ mix index --chunk-size 500 --overlap 50
 
 ### `mix embed`
 
-Generates vector embeddings for indexed chunks.
+Generates vector embeddings for indexed chunks with batched parallel processing and progress tracking.
 
 ```bash
 mix embed [options]
@@ -136,7 +138,7 @@ mix embed [options]
 
 | Option | Description |
 |--------|-------------|
-| `--batch-size <n>` | Number of embeddings per batch. Default: 100. |
+| `--batch-size <n>` | Number of embeddings per batch. Default: 20. |
 
 #### Examples
 
@@ -169,14 +171,14 @@ mix query "How does Shove work?"
 Add to `config/sources.exs`:
 
 ```elixir
-config :aoncrawler, :sources,
+config :webrag, :sources,
   my_source: %{
     name: "My Custom Source",
     base_url: "https://docs.example.com",
     allowed_domains: ["example.com", "docs.example.com"],
     seed_urls: ["https://docs.example.com/"],
     rate_limit: 5,
-    user_agent: "AONCrawler/1.0"
+    user_agent: "WebRAG/1.0"
   }
 ```
 
@@ -191,10 +193,10 @@ mix discover --base-url https://example.com --domains example.com
 Edit `config/config.exs` or use environment variables:
 
 ```elixir
-config :aoncrawler,
+config :webrag,
   max_concurrent: System.schedulers_online()
 
-config :aoncrawler, AONCrawler.Indexer,
+config :webrag, WebRAG.Indexer,
   embedding_model: "text-embedding-3-small",
   embedding_dimensions: 1536,
   batch_size: 100,
@@ -225,6 +227,7 @@ MAX_CONCURRENT=16 mix discover
 │  - Rate limiting per host                                   │
 │  - Skips already-crawled URLs                              │
 │  - Filters invalid URLs (JavaScript, emails, etc.)          │
+│  - Real-time progress bar                                   │
 └─────────────────────────────────────────────────────────────┘
                                │
                                ▼
@@ -241,6 +244,7 @@ MAX_CONCURRENT=16 mix discover
 │  - Parallel embedding generation                            │
 │  - Batch API calls                                         │
 │  - Writes embeddings.json + embeddings.pb                   │
+│  - Real-time progress bar                                   │
 └─────────────────────────────────────────────────────────────┘
                                │
                                ▼
@@ -262,11 +266,11 @@ MAX_CONCURRENT=16 mix discover
 
 ## Scope Control
 
-AONCrawler enforces strict scope boundaries to prevent crawling unrelated sites or the entire internet.
+WebRAG enforces strict scope boundaries to prevent crawling unrelated sites or the entire internet.
 
 ### How It Works
 
-When discovering URLs from a source, AONCrawler:
+When discovering URLs from a source, WebRAG:
 
 1. **Extracts all links** from each page (including external links)
 2. **Filters by allowed domains** - only URLs matching the configured domains are kept
@@ -316,3 +320,31 @@ data/
 |--------|---------|
 | `*.json` | Human-readable for testing/debugging |
 | `*.pb` | Binary for production pipeline |
+
+## Progress Tracking
+
+WebRAG provides real-time progress bars for long-running operations:
+
+```
+CRAWL PHASE
+========================================
+  Source: Archives of Nethys
+  Discovered URLs: 15000
+  Already Crawled: 5000
+  To Crawl: 10000
+  Max Concurrent: 8
+
+[████████████████████░░░░░░] 80.0% | Crawled: 8000 | Failed: 50 | Pending: 2000
+```
+
+Embed phase also shows batch processing progress:
+
+```
+Processing with 4 concurrent batches...
+
+[████████████████████░░░░░░] 80.0% | Completed: 8/10 | Failed: 0
+```
+
+## License
+
+MIT License - see [LICENSE](LICENSE) for details.

@@ -2,8 +2,8 @@ import Config
 
 import_config "sources.exs"
 
-config :aoncrawler,
-  ecto_repos: [AONCrawler.Repo],
+config :webrag,
+  ecto_repos: [WebRAG.Repo],
   generators: [timestamp_type: :utc_datetime]
 
 config :logger,
@@ -14,34 +14,34 @@ config :logger, :console,
   format: "$time $metadata[$level] $message\n",
   metadata: [:request_id]
 
-config :aoncrawler,
+config :webrag,
   max_concurrent: System.schedulers_online()
 
-config :aoncrawler, AONCrawler.Crawler,
+config :webrag, WebRAG.Crawler,
   rate_limit: 50,
   burst_size: 25,
   request_timeout: 30_000,
-  user_agent: "AONCrawler/1.0"
+  user_agent: "WebRAG/1.0"
 
-config :aoncrawler, :crawler_rate_limit, 5
-config :aoncrawler, :crawler_burst_size, 3
+config :webrag, :crawler_rate_limit, 5
+config :webrag, :crawler_burst_size, 3
 
-config :aoncrawler, AONCrawler.Indexer,
+config :webrag, WebRAG.Indexer,
   embedding_model: "text-embedding-3-small",
   embedding_dimensions: 1536,
   batch_size: 100,
   max_concurrent_batches: System.schedulers_online()
 
-config :aoncrawler, AONCrawler.LLM,
+config :webrag, WebRAG.LLM,
   model: "gpt-4-turbo",
   temperature: 0.3,
   max_tokens: 1500
 
-config :aoncrawler, AONCrawler.API.Endpoint,
+config :webrag, WebRAG.API.Endpoint,
   port: 4000,
   url: [host: "0.0.0.0"]
 
-config :aoncrawler,
+config :webrag,
   start_database: false,
   start_crawler: true,
   start_indexer: true,

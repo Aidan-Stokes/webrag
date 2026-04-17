@@ -1,6 +1,6 @@
 import Config
 
-config :aoncrawler, :sources,
+config :webrag, :sources,
   archives_of_nethys: %{
     name: "Archives of Nethys",
     base_url: "https://2e.aonprd.com",
@@ -24,7 +24,7 @@ config :aoncrawler, :sources,
       "https://2e.aonprd.com/Sources.aspx"
     ],
     rate_limit: 10,
-    user_agent: "AONCrawler/1.0 (Pathfinder 2e Rules RAG)"
+    user_agent: "WebRAG/1.0 (Pathfinder 2e Rules RAG)"
   },
   yahoo_finance: %{
     name: "Yahoo Finance News",
@@ -35,7 +35,7 @@ config :aoncrawler, :sources,
       "https://finance.yahoo.com/markets/"
     ],
     rate_limit: 5,
-    user_agent: "AONCrawler/1.0 (Finance News RAG)"
+    user_agent: "WebRAG/1.0 (Finance News RAG)"
   },
   national_archives: %{
     name: "U.S. National Archives",
@@ -46,5 +46,5 @@ config :aoncrawler, :sources,
       "https://www.archives.gov/constitution"
     ],
     rate_limit: 2,
-    user_agent: "AONCrawler/1.0 (Historical Documents RAG)"
+    user_agent: "WebRAG/1.0 (Historical Documents RAG)"
   }
