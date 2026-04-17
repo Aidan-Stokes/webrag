@@ -257,6 +257,23 @@ defmodule WebRAG.Storage do
   end
 
   @doc """
+  Returns chunks that don't have corresponding embeddings.
+  """
+  @spec chunks_without_embeddings() :: [map()]
+  def chunks_without_embeddings do
+    chunks = load_chunks()
+    embeddings = load_embeddings()
+
+    embedded_chunk_ids =
+      embeddings
+      |> Enum.map(& &1.chunk_id)
+      |> MapSet.new()
+
+    chunks
+    |> Enum.reject(fn chunk -> MapSet.member?(embedded_chunk_ids, chunk.id) end)
+  end
+
+  @doc """
   Loads discovered URLs for a source.
   """
   @spec load_discovered_urls(atom()) :: [String.t()]

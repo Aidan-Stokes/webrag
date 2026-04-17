@@ -560,8 +560,6 @@ defmodule WebRAG.Crawler.Coordinator do
   @impl true
   def handle_cast(:resume_from_network, state) do
     if state.status == :paused do
-      Logger.info("Resuming crawl after network recovery", job_id: state.job_id)
-
       new_state =
         state
         |> Map.put(:status, :crawling)
@@ -585,7 +583,7 @@ defmodule WebRAG.Crawler.Coordinator do
 
   @impl true
   def handle_info({:network_status, :offline}, state) do
-    Logger.warning("Network offline detected, pausing crawl")
+    IO.puts(IO.ANSI.yellow() <> "\n⚠ Network offline - pausing operations\n" <> IO.ANSI.reset())
 
     new_state =
       state
@@ -601,7 +599,9 @@ defmodule WebRAG.Crawler.Coordinator do
   @impl true
   def handle_info({:network_status, :online}, state) do
     if state.network_paused do
-      Logger.info("Network online, resuming crawl after brief cooldown")
+      IO.puts(
+        IO.ANSI.green() <> "\n✓ Network restored - resuming operations\n" <> IO.ANSI.reset()
+      )
 
       spawn(fn ->
         Process.sleep(:timer.seconds(5))

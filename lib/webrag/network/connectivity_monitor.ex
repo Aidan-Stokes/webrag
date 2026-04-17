@@ -228,7 +228,6 @@ defmodule WebRAG.Network.ConnectivityMonitor do
     case perform_check(state) do
       {:ok, true} ->
         if state.consecutive_successes >= state.recovery_successes_needed do
-          Logger.info("Network connectivity restored")
           broadcast(state.subscribers, {:network_status, :online})
           new_state = %{state | state: :online, consecutive_failures: 0, consecutive_successes: 0}
           {:noreply, schedule_next_check(new_state)}
@@ -238,7 +237,6 @@ defmodule WebRAG.Network.ConnectivityMonitor do
         end
 
       _ ->
-        Logger.debug("Recovery check failed, retrying")
         new_state = %{state | consecutive_successes: 0}
         {:noreply, schedule_recovery_check(new_state)}
     end
@@ -262,38 +260,7 @@ defmodule WebRAG.Network.ConnectivityMonitor do
   end
 
   defp perform_check(state) do
-    start_time = System.monotonic_time(:millisecond)
-
-    result = WebRAG.Network.HealthCheck.check(state.probe_url, timeout: state.request_timeout)
-
-    elapsed = System.monotonic_time(:millisecond) - start_time
-
-    case result do
-      {:ok, true} ->
-        Logger.debug("Connectivity check succeeded",
-          url: state.probe_url,
-          elapsed_ms: elapsed
-        )
-
-        {:ok, true}
-
-      {:ok, false} ->
-        Logger.debug("Connectivity check returned non-success",
-          url: state.probe_url,
-          elapsed_ms: elapsed
-        )
-
-        {:ok, false}
-
-      {:error, reason} ->
-        Logger.debug("Connectivity check failed",
-          url: state.probe_url,
-          reason: reason,
-          elapsed_ms: elapsed
-        )
-
-        {:error, reason}
-    end
+    WebRAG.Network.HealthCheck.check(state.probe_url, timeout: state.request_timeout)
   rescue
     e ->
       {:error, Exception.message(e)}
@@ -313,20 +280,14 @@ defmodule WebRAG.Network.ConnectivityMonitor do
         new_state = %{new_state | consecutive_successes: state.consecutive_successes + 1}
 
         if new_state.consecutive_successes >= state.recovery_successes_needed do
-          Logger.info("Network connectivity restored after outage")
           broadcast(state.subscribers, {:network_status, :online})
           %{new_state | state: :online, consecutive_successes: 0}
         else
-          Logger.info("Network recovering, awaiting confirmation",
-            successes: new_state.consecutive_successes
-          )
-
           broadcast(state.subscribers, {:network_status, :recovering})
           new_state
         end
 
       state.state == :degraded ->
-        Logger.info("Network connectivity improved")
         broadcast(state.subscribers, {:network_status, :online})
         %{new_state | state: :online}
 
@@ -348,17 +309,14 @@ defmodule WebRAG.Network.ConnectivityMonitor do
 
     cond do
       state.state == :online and new_failures >= state.failure_threshold - 1 ->
-        Logger.warning("Network connectivity degraded", consecutive_failures: new_failures)
         broadcast(state.subscribers, {:network_status, :degraded, new_failures})
         %{new_state | state: :degraded}
 
       state.state == :online and new_failures >= state.failure_threshold ->
-        Logger.error("Network connectivity lost")
         broadcast(state.subscribers, {:network_status, :offline})
         %{new_state | state: :offline}
 
       state.state == :degraded and new_failures >= state.failure_threshold ->
-        Logger.error("Network connectivity lost (was degraded)")
         broadcast(state.subscribers, {:network_status, :offline})
         %{new_state | state: :offline}
 

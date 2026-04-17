@@ -9,14 +9,18 @@ defmodule Mix.Tasks.Embed do
   ## Options
 
       - `--batch-size <n>` - Number of embeddings per batch. Default: 100.
+      - `--only-missing` - Only embed chunks that don't have embeddings yet.
 
   ## Examples
 
       mix embed
       mix embed --batch-size 256
+      mix embed --only-missing
   """
   use Mix.Task
   require Logger
+
+  alias WebRAG.Network.DLQ
 
   @shortdoc "Generate vector embeddings"
 
@@ -28,6 +32,11 @@ defmodule Mix.Tasks.Embed do
   def run(args) do
     {:ok, _} = Application.ensure_all_started(:logger)
     {:ok, _} = Application.ensure_all_started(:webrag)
+
+    # Start connectivity monitor
+    if !Process.whereis(WebRAG.Network.ConnectivityMonitor) do
+      {:ok, _} = WebRAG.Network.ConnectivityMonitor.start_link([])
+    end
 
     # Check if Ollama is available
     unless WebRAG.LLM.Ollama.available?() do
@@ -45,12 +54,14 @@ defmodule Mix.Tasks.Embed do
     {opts, _, _} =
       OptionParser.parse(args,
         switches: [
-          batch_size: :integer
+          batch_size: :integer,
+          only_missing: :boolean
         ],
-        aliases: [b: :batch_size]
+        aliases: [b: :batch_size, o: :only_missing]
       )
 
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
+    only_missing = Keyword.get(opts, :only_missing, false)
 
     IO.puts("==================")
     IO.puts("Embed Phase - Generating Embeddings")
@@ -60,7 +71,14 @@ defmodule Mix.Tasks.Embed do
 
     :ok = WebRAG.Storage.ensure_directories()
 
-    chunks = WebRAG.Storage.load_chunks()
+    chunks =
+      if only_missing do
+        missing = WebRAG.Storage.chunks_without_embeddings()
+        IO.puts("Found #{length(missing)} chunks without embeddings")
+        missing
+      else
+        WebRAG.Storage.load_chunks()
+      end
 
     if Enum.empty?(chunks) do
       IO.puts(:stderr, "No chunks found. Run: mix index")
@@ -153,11 +171,21 @@ defmodule Mix.Tasks.Embed do
         end)
 
       {:error, reason} ->
-        Logger.error("Embedding failed: #{inspect(reason)}")
+        Logger.warning("Batch embedding failed, saving chunks to DLQ: #{inspect(reason)}")
+
+        Enum.each(chunks, fn chunk ->
+          DLQ.save(:embed, chunk.id, reason, %{chunk_text: String.slice(chunk.text, 0, 100)})
+        end)
+
         []
 
       other ->
-        Logger.error("Unexpected response: #{inspect(other)}")
+        Logger.warning("Unexpected response, saving chunks to DLQ: #{inspect(other)}")
+
+        Enum.each(chunks, fn chunk ->
+          DLQ.save(:embed, chunk.id, :unexpected_response, %{})
+        end)
+
         []
     end
   end

@@ -5,7 +5,7 @@ defmodule Mix.Tasks.Discover do
   alias WebRAG.Network
 
   @moduledoc """
-  Discovers URLs from configured or custom sources.
+  Discovers URLs from configured sources.
 
   ## Usage
 
@@ -20,6 +20,7 @@ defmodule Mix.Tasks.Discover do
       - `--seed <url>` - Starting URL(s). Can be repeated.
       - `--depth <n>` - Maximum crawl depth (default: unlimited).
       - `--max-urls <n>` - Maximum URLs to discover (default: 50000).
+      - `--resume` - Resume from saved state if available.
 
   ## Examples
 
@@ -27,6 +28,7 @@ defmodule Mix.Tasks.Discover do
       mix discover --source all
       mix discover --base-url https://example.com --domains example.com,www.example.com
       mix discover --depth 15 --max-urls 100000
+      mix discover --resume
   """
   use Mix.Task
 
@@ -37,9 +39,6 @@ defmodule Mix.Tasks.Discover do
 
   @impl true
   def run(args) do
-    # Quiet down logger during discovery
-    Logger.configure(level: :warning)
-
     {:ok, _} = Application.ensure_all_started(:logger)
     {:ok, _} = Application.ensure_all_started(:telemetry)
     {:ok, _} = Application.ensure_all_started(:req)
@@ -80,7 +79,8 @@ defmodule Mix.Tasks.Discover do
           name: :string,
           seed: [:string, :keep],
           depth: :integer,
-          max_urls: :integer
+          max_urls: :integer,
+          resume: :boolean
         ]
       )
 
@@ -145,11 +145,35 @@ defmodule Mix.Tasks.Discover do
       IO.puts("Domains: #{Enum.join(source.allowed_domains, ", ")}")
       IO.puts("")
 
-      {:ok, urls} =
-        WebRAG.Crawler.Discovery.discover_urls_parallel(source, max_concurrent,
-          max_urls: max_urls,
-          max_depth: max_depth
-        )
+      urls =
+        if opts[:resume] == true and WebRAG.Crawler.Discovery.has_saved_state?(source_id) do
+          case WebRAG.Crawler.Discovery.resume_discovery(source, max_concurrent,
+                 max_urls: max_urls,
+                 max_depth: max_depth
+               ) do
+            {:ok, urls} ->
+              urls
+
+            {:error, :not_found} ->
+              IO.puts("No saved state found, starting fresh...")
+
+              {:ok, urls} =
+                WebRAG.Crawler.Discovery.discover_urls_parallel(source, max_concurrent,
+                  max_urls: max_urls,
+                  max_depth: max_depth
+                )
+
+              urls
+          end
+        else
+          {:ok, urls} =
+            WebRAG.Crawler.Discovery.discover_urls_parallel(source, max_concurrent,
+              max_urls: max_urls,
+              max_depth: max_depth
+            )
+
+          urls
+        end
 
       IO.puts("")
       UI.separator()

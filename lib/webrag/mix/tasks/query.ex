@@ -8,7 +8,7 @@ defmodule Mix.Tasks.Query do
 
   ## Options
 
-      - `--top-k <n>` - Number of results to return. Default: 3.
+      - `--top-k <n>` - Number of results to return. Default: 5.
 
   ## Examples
 
@@ -17,9 +17,11 @@ defmodule Mix.Tasks.Query do
   """
   use Mix.Task
 
+  alias WebRAG.Network.DLQ
+
   @shortdoc "Semantic search with LLM response"
 
-  @default_top_k 3
+  @default_top_k 5
   @default_chat_model "llama3"
 
   @impl true
@@ -107,19 +109,24 @@ defmodule Mix.Tasks.Query do
 
   defp answer_query(query, context) do
     system_prompt = """
-    You are a helpful AI assistant answering questions based on the provided context.
+    You are a helpful AI assistant answering questions about Pathfinder 2nd Edition rules, mechanics, and content.
 
     Your knowledge comes ONLY from the provided context passages. If the context does not contain
     enough information to answer the question, say so clearly.
 
-    Never make up information that isn't in the context.
+    When answering questions about game mechanics, rules, or stats:
+    - Quote specific rules or text from the context when relevant
+    - Be precise with ability names, conditions, and mechanics
+    - If multiple passages are relevant, synthesize them into a coherent answer
+
+    Never make up information that isn't in the context. If you're unsure, say so.
 
     Context:
     #{context}
 
     Question: #{query}
 
-    Provide a clear, accurate answer based on the context above.
+    Provide a clear, accurate answer based on the context above. Include specific citations when relevant.
     """
 
     messages = [
@@ -139,6 +146,9 @@ defmodule Mix.Tasks.Query do
 
       {:error, reason} ->
         IO.puts(:stderr, "Error: #{inspect(reason)}")
+        DLQ.save(:query, query, reason, %{})
+        IO.puts("")
+        IO.puts("Query saved for retry. Run 'mix network.retry --phase query' to retry.")
     end
   end
 end

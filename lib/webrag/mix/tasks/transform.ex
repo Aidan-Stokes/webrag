@@ -1,58 +1,50 @@
 defmodule Mix.Tasks.Transform do
   @moduledoc """
-  Transforms Protocol Buffer files to JSON for debugging.
+  Transforms Protocol Buffer files to JSON for debugging/inspection.
 
   ## Usage
 
       mix transform
 
   Reads .pb files and exports to human-readable .json files.
-  Deduplicates all data types (documents, chunks, embeddings).
+  This command only exports - use `mix compact` for deduplication.
 
   ## Options
 
-      --no-dedup         Skip deduplication step
-      --dedup-only       Only deduplicate, skip JSON export
-      --type <type>      Deduplicate only specific type: documents, chunks, embeddings, or all
+      --type <type>      Export only specific type: documents, chunks, embeddings, or all
 
   ## Examples
 
       mix transform
-      mix transform --no-dedup
-      mix transform --dedup-only
       mix transform --type chunks
+      mix transform --type all
   """
   use Mix.Task
 
-  @shortdoc "Transform .pb to JSON"
+  @shortdoc "Export .pb files to JSON"
 
   @impl true
   def run(args) do
-    opts = parse_args(args)
+    {opts, _, _} =
+      OptionParser.parse(args,
+        switches: [
+          type: :string
+        ]
+      )
 
     IO.puts("==================")
-    IO.puts("Transform Phase")
+    IO.puts("Transform Phase - Exporting .pb to JSON")
     IO.puts("==================")
     IO.puts("")
 
     :ok = WebRAG.Storage.ensure_directories()
 
-    if opts[:dedup_only] do
-      IO.puts("Running deduplication only...")
-      run_deduplication(opts[:type])
-    else
-      if opts[:dedup] do
-        IO.puts("Deduplicating data...")
-        run_deduplication(opts[:type])
-        IO.puts("")
-      end
+    type = Keyword.get(opts, :type, "all")
 
-      IO.puts("Exporting to JSON...")
-      WebRAG.Storage.export_to_json()
-      IO.puts("")
-    end
+    export_type(type)
 
     stats = WebRAG.Storage.stats()
+    IO.puts("")
     IO.puts("Data Summary:")
     IO.puts("  Documents: #{stats.documents}")
     IO.puts("  Chunks: #{stats.chunks}")
@@ -61,37 +53,35 @@ defmodule Mix.Tasks.Transform do
     IO.puts("Transform complete!")
   end
 
-  defp run_deduplication(type) do
-    case type do
-      "documents" ->
-        WebRAG.Storage.deduplicate_documents()
+  defp export_type("documents") do
+    documents = WebRAG.Storage.load_documents()
 
-      "chunks" ->
-        WebRAG.Storage.deduplicate_chunks()
+    if documents != [],
+      do: write_json(Path.join(["data", "documents", "documents.json"]), documents)
 
-      "embeddings" ->
-        WebRAG.Storage.deduplicate_embeddings()
-
-      _ ->
-        WebRAG.Storage.deduplicate_all()
-    end
+    IO.puts("  Exported #{length(documents)} documents")
   end
 
-  defp parse_args(args) do
-    {opts, _, _} =
-      OptionParser.parse(args,
-        switches: [
-          dedup: :boolean,
-          dedup_only: :boolean,
-          type: :string
-        ],
-        aliases: [
-          d: :dedup
-        ]
-      )
+  defp export_type("chunks") do
+    chunks = WebRAG.Storage.load_chunks()
+    if chunks != [], do: write_json(Path.join(["data", "chunks", "chunks.json"]), chunks)
+    IO.puts("  Exported #{length(chunks)} chunks")
+  end
 
-    opts
-    |> Keyword.put_new(:dedup, true)
-    |> Keyword.put_new(:type, "all")
+  defp export_type("embeddings") do
+    embeddings = WebRAG.Storage.load_embeddings()
+
+    if embeddings != [],
+      do: write_json(Path.join(["data", "embeddings", "embeddings.json"]), embeddings)
+
+    IO.puts("  Exported #{length(embeddings)} embeddings")
+  end
+
+  defp export_type(_all) do
+    WebRAG.Storage.export_to_json()
+  end
+
+  defp write_json(path, data) do
+    File.write!(path, Jason.encode!(data, pretty: true))
   end
 end

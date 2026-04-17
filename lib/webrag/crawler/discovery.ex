@@ -8,11 +8,13 @@ defmodule WebRAG.Crawler.Discovery do
 
   alias WebRAG.Crawler.{Source, RateLimiter}
   alias WebRAG.Storage
+  alias WebRAG.Network.DiscoveryState
 
   @ets_table :webrag_discovered_urls
 
   @default_max_urls 100_000
   @default_max_depth :unlimited
+  @checkpoint_interval 100
 
   @doc """
   Initializes the ETS table for discovered URL deduplication.
@@ -53,22 +55,84 @@ defmodule WebRAG.Crawler.Discovery do
 
     IO.puts("")
 
+    state =
+      DiscoveryState.new(source.id, source.seed_urls, max_depth: max_depth, max_urls: max_urls)
+
     _discovered =
-      discover_recursive(source.seed_urls, source, max_concurrent, max_urls, max_depth, 0)
+      discover_recursive(source.seed_urls, source, max_concurrent, max_urls, max_depth, 0, state)
 
     final_count = :ets.info(@ets_table, :size)
     IO.puts("")
     IO.puts("  ✓ Found #{final_count} unique URLs")
 
+    DiscoveryState.delete(source.id)
+
     urls = :ets.tab2list(@ets_table) |> Enum.map(fn {url, _} -> url end)
     {:ok, urls}
   end
 
-  defp discover_recursive([], _source, _max_concurrent, _max_urls, _max_depth, _depth) do
+  @doc """
+  Resumes discovery from a saved state.
+  """
+  @spec resume_discovery(Source.t(), non_neg_integer(), keyword()) ::
+          {:ok, [String.t()]} | {:error, :not_found}
+  def resume_discovery(source, max_concurrent \\ System.schedulers_online(), opts \\ []) do
+    case DiscoveryState.load(source.id) do
+      {:ok, state} ->
+        IO.puts("  Resuming from saved state...")
+
+        IO.puts(
+          "  Previously found #{length(state.discovered_urls)} URLs at depth #{state.current_depth}"
+        )
+
+        IO.puts("")
+
+        init_ets()
+
+        state.discovered_urls
+        |> Enum.each(fn url -> :ets.insert(@ets_table, {url, DateTime.utc_now()}) end)
+
+        max_urls = Keyword.get(opts, :max_urls, state.max_urls)
+        max_depth = Keyword.get(opts, :max_depth, state.max_depth)
+
+        _discovered =
+          discover_recursive(
+            state.frontier,
+            source,
+            max_concurrent,
+            max_urls,
+            max_depth,
+            state.current_depth,
+            state
+          )
+
+        final_count = :ets.info(@ets_table, :size)
+        IO.puts("")
+        IO.puts("  ✓ Found #{final_count} unique URLs (was #{length(state.discovered_urls)})")
+
+        DiscoveryState.delete(source.id)
+
+        urls = :ets.tab2list(@ets_table) |> Enum.map(fn {url, _} -> url end)
+        {:ok, urls}
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Checks if a saved discovery state exists for a source.
+  """
+  @spec has_saved_state?(atom()) :: boolean()
+  def has_saved_state?(source_id) do
+    DiscoveryState.exists?(source_id)
+  end
+
+  defp discover_recursive([], _source, _max_concurrent, _max_urls, _max_depth, _depth, _state) do
     []
   end
 
-  defp discover_recursive(urls, source, max_concurrent, max_urls, max_depth, depth) do
+  defp discover_recursive(urls, source, max_concurrent, max_urls, max_depth, depth, state) do
     cond do
       max_depth != :unlimited and depth >= max_depth ->
         IO.puts("  ◦ Max depth reached")
@@ -102,7 +166,7 @@ defmodule WebRAG.Crawler.Discovery do
                     Enum.filter(links, &Source.valid_url?(&1, source))
                 end
               end,
-              max_concurrency: max_concurrent,
+              max_concurrent: max_concurrent,
               timeout: 60_000
             )
             |> Enum.flat_map(fn
@@ -118,7 +182,23 @@ defmodule WebRAG.Crawler.Discovery do
             IO.puts("  ✓ No more links to follow - discovery complete")
             []
           else
-            discover_recursive(new_urls, source, max_concurrent, max_urls, max_depth, depth + 1)
+            new_count = :ets.info(@ets_table, :size)
+
+            if rem(new_count, @checkpoint_interval) == 0 do
+              discovered = :ets.tab2list(@ets_table) |> Enum.map(fn {url, _} -> url end)
+              new_state = DiscoveryState.update(state, discovered, new_urls, depth + 1)
+              DiscoveryState.save(new_state)
+            end
+
+            discover_recursive(
+              new_urls,
+              source,
+              max_concurrent,
+              max_urls,
+              max_depth,
+              depth + 1,
+              state
+            )
           end
         end
     end

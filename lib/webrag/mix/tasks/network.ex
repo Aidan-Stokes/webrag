@@ -287,24 +287,64 @@ defmodule Mix.Tasks.Network do
     end
   end
 
-  defp retry_operation(%{phase: :discovery}) do
-    IO.puts(IO.ANSI.yellow() <> "(discovery retry not implemented)" <> IO.ANSI.reset())
-    :ok
-  end
+  defp retry_operation(op) do
+    case op.phase do
+      :discovery ->
+        IO.puts("  Discovery retry: Re-run with --resume flag")
+        :ok
 
-  defp retry_operation(%{phase: :crawl}) do
-    IO.puts(IO.ANSI.yellow() <> "(crawl retry not implemented)" <> IO.ANSI.reset())
-    :ok
-  end
+      :crawl ->
+        url = op.operation_id
+        IO.write("  Re-crawling: #{url} ... ")
 
-  defp retry_operation(%{phase: :embed}) do
-    IO.puts(IO.ANSI.yellow() <> "(embed retry not implemented)" <> IO.ANSI.reset())
-    :ok
-  end
+        case WebRAG.Crawler.Worker.execute(%{url: url}) do
+          {:ok, _} ->
+            IO.puts(IO.ANSI.green() <> "✓" <> IO.ANSI.reset())
+            :ok
 
-  defp retry_operation(%{phase: :query}) do
-    IO.puts(IO.ANSI.yellow() <> "(query retry not implemented)" <> IO.ANSI.reset())
-    :ok
+          {:error, reason} ->
+            IO.puts(IO.ANSI.red() <> "✗ #{inspect(reason)}" <> IO.ANSI.reset())
+            {:error, reason}
+        end
+
+      :embed ->
+        chunk_id = op.operation_id
+        IO.write("  Re-embedding: #{chunk_id} ... ")
+
+        chunks = WebRAG.Storage.load_chunks()
+        chunk = Enum.find(chunks, fn c -> c.id == chunk_id end)
+
+        if chunk do
+          case WebRAG.Indexer.EmbeddingClient.embed_batch([chunk.text]) do
+            {:ok, [embedding]} ->
+              embedding_map = %{
+                id: UUID.uuid4(),
+                chunk_id: chunk.id,
+                vector: embedding,
+                model:
+                  Application.get_env(:webrag, [:indexer, :embedding_model], "mxbai-embed-large"),
+                token_count: ceil(String.length(chunk.text) / 4)
+              }
+
+              WebRAG.Storage.append_embedding(embedding_map)
+              IO.puts(IO.ANSI.green() <> "✓" <> IO.ANSI.reset())
+              :ok
+
+            {:error, reason} ->
+              IO.puts(IO.ANSI.red() <> "✗ #{inspect(reason)}" <> IO.ANSI.reset())
+              {:error, reason}
+          end
+        else
+          IO.puts(IO.ANSI.yellow() <> "⚠ chunk not found" <> IO.ANSI.reset())
+          :ok
+        end
+
+      :query ->
+        query = op.operation_id
+        IO.puts("  Re-querying: #{query}")
+        Mix.Tasks.Query.run([query])
+        :ok
+    end
   end
 
   defp ensure_started do

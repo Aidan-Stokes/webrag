@@ -82,6 +82,9 @@ defmodule WebRAG.LLM.Ollama do
       {:ok, %{"error" => error}} ->
         {:error, error}
 
+      {:error, reason} ->
+        {:error, reason}
+
       _ ->
         {:error, :curl_failed}
     end
@@ -167,7 +170,7 @@ defmodule WebRAG.LLM.Ollama do
       {output, _} ->
         case Jason.decode(output) do
           {:ok, %{"error" => error}} -> {:error, error}
-          _ -> {:error, :curl_error}
+          _ -> {:error, {:curl_failed, output}}
         end
     end
   end
