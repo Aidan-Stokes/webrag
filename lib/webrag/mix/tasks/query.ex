@@ -99,6 +99,16 @@ defmodule Mix.Tasks.Query do
           IO.puts("")
         end)
 
+        # Print best passage at end
+        if length(results) > 0 do
+          best = Enum.max_by(results, fn r -> r.score end)
+          IO.puts("==================")
+          IO.puts("BEST PASSAGE (score: #{Float.round(best.score, 3)}):")
+          IO.puts("==================")
+          IO.puts(best.text)
+          IO.puts("")
+        end
+
         IO.puts("==================")
         IO.puts("Generating answer with Ollama...")
         IO.puts("==================")

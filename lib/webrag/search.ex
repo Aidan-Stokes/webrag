@@ -48,7 +48,6 @@ defmodule WebRAG.Search do
           sorted = Enum.sort_by(filtered, fn r -> r.score end, :desc)
           limited = Enum.take(sorted, top_k * 3)
           final = diverse_results(limited, top_k, max_per_doc)
-
           {:ok, final}
 
         {:error, reason} ->
@@ -73,9 +72,9 @@ defmodule WebRAG.Search do
   end
 
   defp cosine(v1, v2) do
-    dot = Enum.zip(v1, v2) |> Enum.reduce(0, fn {a, b}, acc -> a * b + acc end)
-    mag1 = :math.sqrt(Enum.reduce(v1, 0, fn x, acc -> x * x + acc end))
-    mag2 = :math.sqrt(Enum.reduce(v2, 0, fn x, acc -> x * x + acc end))
+    dot = Enum.zip(v1, v2) |> Enum.reduce(0, fn {a, b}, c -> a * b + c end)
+    mag1 = :math.sqrt(Enum.reduce(v1, 0, fn x, c -> x * x + c end))
+    mag2 = :math.sqrt(Enum.reduce(v2, 0, fn x, c -> x * x + c end))
     if mag1 == 0 or mag2 == 0, do: 0.0, else: dot / (mag1 * mag2)
   end
 
@@ -94,11 +93,16 @@ defmodule WebRAG.Search do
     base =
       Enum.reduce(kw, 0, fn k, a ->
         vars = stem_variants(k)
+        exact = Enum.any?(vars, fn v -> String.contains?(tl, v) end)
 
-        if Enum.any?(vars, fn v -> String.contains?(tl, v) end) do
+        if exact do
           a + (Map.get(idf, k, %{})[:idf] || 0)
         else
-          a
+          if String.length(k) > 4 and fuzzy_match?(tl, k, 2) do
+            a + 1.0
+          else
+            a
+          end
         end
       end)
 
@@ -110,26 +114,103 @@ defmodule WebRAG.Search do
       end
 
     max_kw = length(kw) * 5.0
-    raw = base + bonus
-    min(raw / max_kw * 1.5, 1.0)
+    min((base + bonus) / max_kw * 1.5, 1.0)
   end
 
   defp stem_variants(w) do
-    corrections = %{
-      "spek" => "speak",
+    # Load mappings from file or use defaults
+    mappings = %{
       "dwarfs" => "dwarf",
       "elfs" => "elf",
       "orcs" => "orc",
       "humans" => "human",
-      "halflings" => "halfling"
+      "halflings" => "halfling",
+      "gnomes" => "gnome",
+      "elves" => "elf",
+      "dwarves" => "dwarf"
     }
 
-    corrected = Map.get(corrections, w, w)
-    stemmed = String.replace(corrected, ~r/(s|es|ed|ing)$/, "")
-    [corrected, w, stemmed] |> Enum.uniq()
+    # Try file-based mappings first
+    mappings =
+      if File.exists?("data/word_mappings.txt") do
+        file_maps =
+          "data/word_mappings.txt"
+          |> File.stream!()
+          |> Stream.reject(fn l -> String.trim(l) == "" or String.starts_with?(l, "#") end)
+          |> Enum.map(fn l ->
+            case String.split(String.trim(l), "=>", parts: 2) do
+              [p, s] -> {String.trim(p), String.trim(s)}
+              _ -> nil
+            end
+          end)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.into(%{})
+
+        Map.merge(mappings, file_maps)
+      else
+        mappings
+      end
+
+    singular = Map.get(mappings, w)
+    stemmed = String.replace(w, ~r/(s|es|ed|ing)$/, "")
+
+    result = [w]
+    if singular && singular != w, do: result ++ [singular], else: result
+    if stemmed != w && stemmed != singular, do: result ++ [stemmed], else: result
+
+    Enum.uniq(result)
+  end
+
+  # Simple fuzzy: check if word is prefix-similar  
+  defp fuzzy_match?(text, word, _max_dist) do
+    tws = String.split(String.downcase(text), ~r/\s+/) |> Enum.map(&String.trim/1)
+    target = String.downcase(word)
+
+    # Check if target is close to any text word by prefix
+    Enum.any?(tws, fn tw ->
+      (String.starts_with?(tw, target) and String.length(target) > 3) or
+        (String.starts_with?(target, tw) and String.length(tw) > 3)
+    end)
+  end
+
+  defp levenshtein(s1, s2) do
+    len1 = String.length(s1)
+    len2 = String.length(s2)
+    if abs(len1 - len2) > 2, do: 999, else: do_calc(s1, s2)
+  end
+
+  defp do_calc(s1, s2) do
+    len1 = String.length(s1)
+    len2 = String.length(s2)
+
+    d =
+      for i <- 0..len1,
+          j <- 0..len2,
+          into: %{},
+          do: {i * 1000 + j, if(i == 0, do: j, else: if(j == 0, do: i, else: 999))}
+
+    String.graphemes(s1)
+    |> Enum.with_index(1)
+    |> Enum.each(fn {c1, i} ->
+      String.graphemes(s2)
+      |> Enum.with_index(1)
+      |> Enum.each(fn {c2, j} ->
+        cost = if c1 == c2, do: 0, else: 1
+
+        v =
+          Enum.min([
+            d[(i - 1) * 1000 + j] + 1,
+            d[i * 1000 + (j - 1)] + 1,
+            d[(i - 1) * 1000 + (j - 1)] + cost
+          ])
+
+        d = Map.put(d, i * 1000 + j, v)
+      end)
+    end)
+
+    d[len1 * 1000 + len2]
   end
 
   defp load_idf_terms, do: WebRAG.Storage.load_idf_terms()
-
   defp hybrid(e, t), do: (1 - @keyword_weight) * e + @keyword_weight * t
 end
