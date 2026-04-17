@@ -1,218 +1,79 @@
-defmodule Mix.Tasks.Embed do
+defmodule Mix.Tasks.Search.BuildIdf do
   @moduledoc """
-  Generates vector embeddings for indexed chunks.
+  Builds IDF (Inverse Document Frequency) index for TF-IDF scoring.
+
+  This analyzes all indexed chunks to compute how rare/common each term is,
+  which improves search relevance by boosting rare terms and penalizing common ones.
 
   ## Usage
 
-      mix embed
+      mix search.build_idf
 
-  ## Options
+  ## What it does
 
-      - `--batch-size <n>` - Number of embeddings per batch. Default: 100.
-      - `--only-missing` - Only embed chunks that don't have embeddings yet.
+  1. Loads all indexed chunks
+  2. Extracts unique terms from each chunk
+  3. Computes IDF scores: log(total_chunks / documents_containing_term)
+  4. Saves IDF data to data/idf_terms.pb
+
+  Run this after:
+  - Running mix embed (to index new content)
+  - Any data crawl/index cycle
 
   ## Examples
 
-      mix embed
-      mix embed --batch-size 256
-      mix embed --only-missing
+      mix search.build_idf
   """
   use Mix.Task
   require Logger
 
-  alias WebRAG.Network.DLQ
+  alias WebRAG.Search.IDFScorer
 
-  @shortdoc "Generate vector embeddings"
-
-  @default_batch_size 20
-
-  @progress_ets :webrag_embed_progress
+  @shortdoc "Build IDF index for search"
 
   @impl true
-  def run(args) do
+  def run(_args) do
     {:ok, _} = Application.ensure_all_started(:logger)
     {:ok, _} = Application.ensure_all_started(:webrag)
 
-    # Start connectivity monitor
-    if !Process.whereis(WebRAG.Network.ConnectivityMonitor) do
-      {:ok, _} = WebRAG.Network.ConnectivityMonitor.start_link([])
-    end
+    Logger.info("Building IDF index...")
 
-    # Check if Ollama is available
-    unless WebRAG.LLM.Ollama.available?() do
-      IO.puts(:stderr, "")
-      IO.puts(:stderr, "✗ Ollama is not available at localhost:11434")
-      IO.puts(:stderr, "")
-      IO.puts("Please ensure Ollama is running:")
-      IO.puts("  1. Install Ollama: https://ollama.ai")
-      IO.puts("  2. Start Ollama: ollama serve")
-      IO.puts("  3. Pull a model: ollama pull mxbai-embed-large")
-      IO.puts("")
+    chunks = WebRAG.Storage.load_chunks()
+
+    if length(chunks) == 0 do
+      Logger.error("No chunks found. Run mix embed first.")
       exit({:shutdown, 1})
     end
 
-    {opts, _, _} =
-      OptionParser.parse(args,
-        switches: [
-          batch_size: :integer,
-          only_missing: :boolean
-        ],
-        aliases: [b: :batch_size, o: :only_missing]
-      )
+    Logger.info("Analyzing #{length(chunks)} chunks...")
 
-    batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
-    only_missing = Keyword.get(opts, :only_missing, false)
+    idf_map = IDFScorer.compute_idf(chunks)
 
-    IO.puts("==================")
-    IO.puts("Embed Phase - Generating Embeddings")
-    IO.puts("==================")
-    IO.puts("Batch size: #{batch_size}")
-    IO.puts("")
+    Logger.info("Computed #{map_size(idf_map)} unique terms")
 
-    :ok = WebRAG.Storage.ensure_directories()
+    # Save to storage
+    json_path = Path.join(["data", "idf_terms.json"])
 
-    chunks =
-      if only_missing do
-        missing = WebRAG.Storage.chunks_without_embeddings()
-        IO.puts("Found #{length(missing)} chunks without embeddings")
-        missing
+    data =
+      idf_map
+      |> Map.to_list()
+      |> Enum.map(fn {term, d} -> %{term: term, frequency: d[:frequency], idf: d[:idf]} end)
+
+    File.write!(json_path, Jason.encode!(data, pretty: true))
+    Logger.info("IDF index saved to data/idf_terms.json")
+
+    # Show some example IDF scores
+    example_terms = ["orc", "boost", "attribute", "character", "genie", "spell", "mechanics"]
+    Logger.info("Sample IDF scores:")
+
+    Enum.each(example_terms, fn term ->
+      data = Map.get(idf_map, term)
+
+      if data do
+        Logger.info("  #{term}: frequency=#{data[:frequency]}, idf=#{Float.round(data[:idf], 3)}")
       else
-        WebRAG.Storage.load_chunks()
+        Logger.info("  #{term}: not found")
       end
-
-    if Enum.empty?(chunks) do
-      IO.puts(:stderr, "No chunks found. Run: mix index")
-      exit({:shutdown, 1})
-    end
-
-    IO.puts("Loaded #{length(chunks)} chunks")
-
-    max_concurrent =
-      Application.get_env(:webrag, :indexer)[:max_concurrent_batches] ||
-        System.schedulers_online()
-
-    batches = Enum.chunk_every(chunks, batch_size)
-    total_batches = length(batches)
-
-    if :ets.info(@progress_ets) == :undefined do
-      :ets.new(@progress_ets, [:set, :named_table, :public])
-    else
-      :ets.delete_all_objects(@progress_ets)
-    end
-
-    :ets.insert(@progress_ets, {:stats, 0, 0})
-
-    IO.puts("Processing with #{max_concurrent} concurrent batches...")
-    IO.puts("")
-
-    progress_task =
-      spawn(fn ->
-        loop_embed_progress(total_batches)
-      end)
-
-    embeddings =
-      batches
-      |> Task.async_stream(
-        fn batch ->
-          case generate_batch_embeddings(batch) do
-            [] ->
-              :ets.update_counter(@progress_ets, :stats, {3, 1})
-              []
-
-            results ->
-              :ets.update_counter(@progress_ets, :stats, {2, 1})
-              results
-          end
-        end,
-        max_concurrent: max_concurrent,
-        timeout: :infinity
-      )
-      |> Stream.map(fn
-        {:ok, results} ->
-          results
-
-        {:error, reason} ->
-          Logger.error("Batch embedding failed: #{inspect(reason)}")
-          :ets.update_counter(@progress_ets, :stats, {3, 1})
-          []
-      end)
-      |> Enum.flat_map(& &1)
-
-    send(progress_task, :stop)
-
-    IO.puts("Generated #{length(embeddings)} embeddings")
-
-    Enum.each(embeddings, &WebRAG.Storage.append_embedding/1)
-
-    IO.puts("")
-    IO.puts("Embedding complete!")
-    IO.puts("Run: mix query \"your question\"")
-  end
-
-  defp generate_batch_embeddings(chunks) do
-    texts = Enum.map(chunks, & &1.text)
-
-    case WebRAG.Indexer.EmbeddingClient.embed_batch(texts) do
-      {:ok, embeddings} ->
-        Enum.zip(chunks, embeddings)
-        |> Enum.map(fn {chunk, embedding} ->
-          %{
-            id: UUID.uuid4(),
-            chunk_id: chunk.id,
-            vector: embedding,
-            model:
-              Application.get_env(
-                :webrag,
-                [:indexer, :embedding_model],
-                "mxbai-embed-large"
-              ),
-            token_count: estimate_tokens(chunk.text)
-          }
-        end)
-
-      {:error, reason} ->
-        Logger.warning("Batch embedding failed, saving chunks to DLQ: #{inspect(reason)}")
-
-        Enum.each(chunks, fn chunk ->
-          DLQ.save(:embed, chunk.id, reason, %{chunk_text: String.slice(chunk.text, 0, 100)})
-        end)
-
-        []
-
-      other ->
-        Logger.warning("Unexpected response, saving chunks to DLQ: #{inspect(other)}")
-
-        Enum.each(chunks, fn chunk ->
-          DLQ.save(:embed, chunk.id, :unexpected_response, %{})
-        end)
-
-        []
-    end
-  end
-
-  defp estimate_tokens(text) do
-    ceil(String.length(text) / 4)
-  end
-
-  defp loop_embed_progress(total_batches) do
-    receive do
-      :stop -> :ok
-    after
-      500 ->
-        [{:stats, completed, failed}] = :ets.lookup(@progress_ets, :stats)
-        percent = completed / total_batches
-
-        bar_width = 30
-        filled = round(bar_width * percent)
-        bar = String.duplicate("█", filled) <> String.duplicate("░", bar_width - filled)
-
-        percent_str = :io_lib.format("~.1f", [percent * 100.0]) |> IO.chardata_to_string()
-
-        IO.write(
-          "\r[#{bar}] #{percent_str}% | Completed: #{completed}/#{total_batches} | Failed: #{failed}  "
-        )
-
-        loop_embed_progress(total_batches)
-    end
+    end)
   end
 end

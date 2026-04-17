@@ -257,6 +257,39 @@ defmodule WebRAG.Storage do
   end
 
   @doc """
+  Saves IDF term data to storage.
+  """
+  def save_idf_terms(idf_map) do
+    json_path = Path.join([@data_dir, "idf_terms.json"])
+
+    idf_map
+    |> Map.to_list()
+    |> Enum.map(fn {term, data} ->
+      %{term: term, frequency: data[:frequency], idf: data[:idf]}
+    end)
+    |> write_json(json_path)
+  end
+
+  @doc """
+  Loads IDF term data from storage.
+  """
+  def load_idf_terms do
+    json_path = Path.join([@data_dir, "idf_terms.json"])
+
+    if File.exists?(json_path) do
+      json_path
+      |> File.read!()
+      |> Jason.decode!(keys: :atoms!)
+      |> Enum.map(fn %{term: term, frequency: freq, idf: idf} ->
+        {term, %{frequency: freq, idf: idf}}
+      end)
+      |> Map.new()
+    else
+      %{}
+    end
+  end
+
+  @doc """
   Returns chunks that don't have corresponding embeddings.
   """
   @spec chunks_without_embeddings() :: [map()]
