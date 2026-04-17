@@ -6,8 +6,44 @@ defmodule WebRAG.Search do
   @default_min_score 0.1
   @default_max_per_doc 5
   @keyword_weight 0.3
+  @cache_ttl_ms 60_000
 
   @stopwords ~w(the a an is are was were be been being have has had do does did will would could should may might must shall can this that these those what when where why how who which for from of and or not but with into onto about above below under over after before between during through because)
+
+  defmodule QueryCache do
+    @table :webrag_query_cache
+
+    def init do
+      if :ets.info(@table) == :undefined do
+        :ets.new(@table, [:set, :named_table, :public, read_concurrency: true])
+      end
+    end
+
+    def get(query) do
+      case :ets.lookup(@table, query) do
+        [{^query, embedding, timestamp}] ->
+          now = System.system_time(:millisecond)
+
+          if now - timestamp < 60_000 do
+            {:hit, embedding}
+          else
+            :ets.delete(@table, query)
+            :miss
+          end
+
+        [] ->
+          :miss
+      end
+    end
+
+    def put(query, embedding) do
+      :ets.insert(@table, {query, embedding, System.system_time(:millisecond)})
+    end
+
+    def clear do
+      :ets.delete_all_objects(@table)
+    end
+  end
 
   def search(query, opts \\ []) do
     top_k = Keyword.get(opts, :top_k, @default_top_k)
@@ -21,8 +57,13 @@ defmodule WebRAG.Search do
       WebRAG.Indexer.VectorStore.load_embeddings()
     end
 
-    case WebRAG.LLM.Ollama.embed(query) do
-      {:ok, qv} ->
+    qv = get_or_create_embedding(query)
+
+    case qv do
+      nil ->
+        {:error, :embedding_failed}
+
+      _ ->
         kw = extract_keywords(query)
         idf = load_idf_terms()
 
@@ -58,9 +99,6 @@ defmodule WebRAG.Search do
           {:error, reason} ->
             {:error, reason}
         end
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 
@@ -214,4 +252,23 @@ defmodule WebRAG.Search do
 
   defp load_idf_terms, do: WebRAG.Storage.load_idf_terms()
   defp hybrid(e, t), do: (1 - @keyword_weight) * e + @keyword_weight * t
+
+  defp get_or_create_embedding(query) do
+    QueryCache.init()
+
+    case QueryCache.get(query) do
+      {:hit, embedding} ->
+        embedding
+
+      :miss ->
+        case WebRAG.LLM.Ollama.embed(query) do
+          {:ok, embedding} ->
+            QueryCache.put(query, embedding)
+            embedding
+
+          {:error, _} ->
+            nil
+        end
+    end
+  end
 end

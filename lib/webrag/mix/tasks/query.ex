@@ -18,6 +18,7 @@ defmodule Mix.Tasks.Query do
   use Mix.Task
 
   alias WebRAG.Network.DLQ
+  alias WebRAG.UI
 
   @shortdoc "Semantic search with LLM response"
 
@@ -46,14 +47,13 @@ defmodule Mix.Tasks.Query do
 
     top_k = Keyword.get(opts, :top_k, @default_top_k)
 
-    IO.puts("")
-    IO.puts("==================")
-    IO.puts("Query: #{query}")
-    IO.puts("==================")
-    IO.puts("")
+    UI.write_header("Semantic Search", [
+      {"Query", query},
+      {"Top K", top_k}
+    ])
 
     if !WebRAG.LLM.Ollama.available?() do
-      IO.puts(:stderr, "ERROR: Ollama is not running!")
+      UI.error("Ollama is not running!")
       IO.puts(:stderr, "Please start Ollama: ollama serve")
       exit({:shutdown, 1})
     end
@@ -61,7 +61,7 @@ defmodule Mix.Tasks.Query do
     embeddings = WebRAG.Storage.load_embeddings()
 
     if length(embeddings) == 0 do
-      IO.puts("No embeddings found!")
+      UI.error("No embeddings found!")
       IO.puts("Please run first:")
       IO.puts("  mix discover")
       IO.puts("  mix crawl")
@@ -70,54 +70,48 @@ defmodule Mix.Tasks.Query do
       exit({:shutdown, 1})
     end
 
-    IO.puts("Searching #{length(embeddings)} embeddings...")
+    IO.puts("#{UI.ANSI.gray()}Searching #{length(embeddings)} embeddings...#{UI.ANSI.reset()}")
 
     case WebRAG.Search.search(query, top_k: top_k) do
       {:ok, []} ->
-        IO.puts("No relevant results found.")
+        UI.warn("No relevant results found.")
 
       {:ok, results} ->
-        IO.puts("Found #{length(results)} relevant passages:")
+        UI.section("Search Results (#{length(results)} found)")
         IO.puts("")
 
-        context =
-          results
-          |> Enum.with_index(1)
-          |> Enum.map(fn {result, i} ->
-            """
-            [Passage #{i} (score: #{Float.round(result.score, 3)}]
-            #{result.text}
-            """
-          end)
-          |> Enum.join("\n---\n")
-
-        Enum.each(results, fn result ->
-          IO.puts("---")
-          IO.puts("Score: #{Float.round(result.score, 3)}")
-          IO.puts("")
-          IO.puts(result.text)
-          IO.puts("")
+        results
+        |> Enum.with_index(1)
+        |> Enum.each(fn {result, i} ->
+          UI.format_result(result, i, truncate: true, show_breakdown: true)
+          IO.puts("#{UI.ANSI.gray()}#{String.duplicate("─", 60)}#{UI.ANSI.reset()}")
         end)
 
         # Print best passage at end
         if length(results) > 0 do
           best = Enum.max_by(results, fn r -> r.score end)
-          IO.puts("==================")
-          IO.puts("BEST PASSAGE (score: #{Float.round(best.score, 3)}):")
-          IO.puts("==================")
-          IO.puts(best.text)
+          UI.section("Best Passage")
+          IO.puts("#{UI.ANSI.green()}Score: #{Float.round(best.score, 3)}#{UI.ANSI.reset()}")
           IO.puts("")
+          IO.puts(best.text)
         end
 
-        IO.puts("==================")
-        IO.puts("Generating answer with Ollama...")
-        IO.puts("==================")
+        IO.puts("")
+        UI.section("Generating Answer")
 
-        answer_query(query, context)
+        answer_query(query, results)
     end
   end
 
-  defp answer_query(query, context) do
+  defp answer_query(query, results) do
+    context =
+      results
+      |> Enum.with_index(1)
+      |> Enum.map(fn {result, i} ->
+        UI.format_passage(result, i)
+      end)
+      |> Enum.join("\n---\n")
+
     system_prompt = """
     You are a helpful AI assistant answering questions about Pathfinder 2nd Edition rules, mechanics, and content.
 
@@ -146,16 +140,13 @@ defmodule Mix.Tasks.Query do
 
     case WebRAG.LLM.Ollama.chat(messages, model: @default_chat_model) do
       {:ok, response} ->
-        IO.puts("")
-        IO.puts("==================")
-        IO.puts("ANSWER:")
-        IO.puts("==================")
+        UI.section("Answer")
         IO.puts("")
         IO.puts(response.content)
         IO.puts("")
 
       {:error, reason} ->
-        IO.puts(:stderr, "Error: #{inspect(reason)}")
+        UI.error("Query failed: #{inspect(reason)}")
         DLQ.save(:query, query, reason, %{})
         IO.puts("")
         IO.puts("Query saved for retry. Run 'mix network.retry --phase query' to retry.")

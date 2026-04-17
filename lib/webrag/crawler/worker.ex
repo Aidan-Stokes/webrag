@@ -250,10 +250,50 @@ defmodule WebRAG.Crawler.Worker do
 
     content =
       Enum.find_value(content_selectors, fn selector ->
-        Floki.find(document, selector) |> Floki.text()
-      end) || Floki.text(document)
+        result = Floki.find(document, selector) |> Floki.text()
+        if String.length(result) > 100, do: result, else: nil
+      end)
 
-    # Clean up the content
+    if content && String.length(content) > 100 do
+      clean_content(content)
+    else
+      extract_by_text_density(document)
+    end
+  end
+
+  defp extract_by_text_density(document) do
+    candidates =
+      Floki.find(document, "div, section, article, main")
+      |> Enum.reject(fn elem ->
+        classes = Floki.attribute(elem, "class") |> Enum.join(" ")
+        nav_classes = ~w(nav menu sidebar footer header)
+        Enum.any?(nav_classes, fn nc -> String.contains?(classes, nc) end)
+      end)
+      |> Enum.map(fn elem ->
+        raw = Floki.raw_html(elem)
+        text = Floki.text(elem) |> String.trim()
+        html_len = String.length(raw)
+        text_len = String.length(text)
+        density = if html_len > 0, do: text_len / html_len, else: 0
+
+        {elem, text, density, text_len}
+      end)
+      |> Enum.sort_by(fn {_, _, density, text_len} -> density * min(text_len, 1000) end, :desc)
+      |> Enum.take(10)
+
+    case candidates do
+      [] ->
+        Floki.text(document) |> clean_content()
+
+      [{_, text, density, _} | _] when density > 0.05 and text != "" ->
+        text |> clean_content()
+
+      _ ->
+        Floki.text(document) |> clean_content()
+    end
+  end
+
+  defp clean_content(content) do
     content
     |> String.split("\n")
     |> Enum.map(&String.trim/1)
