@@ -238,6 +238,58 @@ defmodule WebRAG.Storage do
   end
 
   @doc """
+  Streams chunks lazily for memory-efficient processing.
+  """
+  @spec stream_chunks() :: Enumerable.t()
+  def stream_chunks do
+    pb_path = Path.join([@data_dir, "chunks", "chunks.pb"])
+
+    if File.exists?(pb_path) do
+      Stream.resource(
+        fn -> File.open!(pb_path, [:read, :binary]) end,
+        fn file ->
+          case IO.binread(file, 4) do
+            :eof ->
+              {:halt, file}
+
+            <<size::32-little>> ->
+              case IO.binread(file, size) do
+                <<>> ->
+                  {:halt, file}
+
+                binary ->
+                  case try_decode(binary, &Chunk.decode/1) do
+                    {:ok, msg} -> {[msg], file}
+                    :error -> {[nil], file}
+                  end
+              end
+          end
+        end,
+        fn file -> File.close(file) end
+      )
+      |> Stream.reject(&is_nil/1)
+    else
+      Stream.map([], fn _ -> nil end)
+    end
+  end
+
+  @doc """
+  Returns the total count of chunks without loading all into memory.
+  """
+  @spec count_chunks() :: non_neg_integer()
+  def count_chunks do
+    pb_path = Path.join([@data_dir, "chunks", "chunks.pb"])
+
+    if File.exists?(pb_path) do
+      pb_path
+      |> File.read!()
+      |> count_pb_messages()
+    else
+      0
+    end
+  end
+
+  @doc """
   Loads all embeddings from storage.
   """
   def load_embeddings do
@@ -255,6 +307,95 @@ defmodule WebRAG.Storage do
         []
     end
   end
+
+  @doc """
+  Streams embeddings lazily for memory-efficient processing.
+  Use with Enum.take/2 to limit results.
+
+  ## Example
+      stream_embeddings() |> Enum.take(1000)
+  """
+  @spec stream_embeddings() :: Enumerable.t()
+  def stream_embeddings do
+    pb_path = Path.join([@data_dir, "embeddings", "embeddings.pb"])
+
+    if File.exists?(pb_path) do
+      Stream.resource(
+        fn -> File.open!(pb_path, [:read, :binary]) end,
+        fn file ->
+          case IO.binread(file, 4) do
+            :eof ->
+              {:halt, file}
+
+            <<size::32-little>> ->
+              case IO.binread(file, size) do
+                <<>> ->
+                  {:halt, file}
+
+                binary ->
+                  case try_decode(binary, &Embedding.decode/1) do
+                    {:ok, msg} -> {[msg], file}
+                    :error -> {[nil], file}
+                  end
+              end
+          end
+        end,
+        fn file -> File.close(file) end
+      )
+      |> Stream.reject(&is_nil/1)
+    else
+      Stream.map([], fn _ -> nil end)
+    end
+  end
+
+  @doc """
+  Loads embeddings in batches for chunked processing.
+  Useful for progressive loading or pagination.
+
+  ## Parameters
+    - offset: Starting position
+    - limit: Number of items to load
+
+  ## Example
+      load_embeddings_paged(0, 1000)  # First 1000
+      load_embeddings_paged(1000, 1000)  # Next 1000
+  """
+  @spec load_embeddings_paged(non_neg_integer(), non_neg_integer()) :: [any()]
+  def load_embeddings_paged(offset, limit) do
+    pb_path = Path.join([@data_dir, "embeddings", "embeddings.pb"])
+
+    if File.exists?(pb_path) do
+      stream_embeddings()
+      |> Stream.drop(offset)
+      |> Enum.take(limit)
+    else
+      []
+    end
+  end
+
+  @doc """
+  Returns the total count of embeddings without loading all into memory.
+  """
+  @spec count_embeddings() :: non_neg_integer()
+  def count_embeddings do
+    pb_path = Path.join([@data_dir, "embeddings", "embeddings.pb"])
+
+    if File.exists?(pb_path) do
+      pb_path
+      |> File.read!()
+      |> count_pb_messages()
+    else
+      0
+    end
+  end
+
+  defp count_pb_messages(<<>>), do: 0
+
+  defp count_pb_messages(<<size::32-little, _binary::binary-size(size), rest::binary>>) do
+    1 + count_pb_messages(rest)
+  end
+
+  defp count_pb_messages(data) when byte_size(data) < 4, do: 0
 
   @doc """
   Saves IDF term data to storage.
