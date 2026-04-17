@@ -43,6 +43,7 @@ defmodule WebRAG.Crawler.Coordinator do
   require Logger
   alias WebRAG.Storage
   alias WebRAG.Crawler.Worker
+  alias WebRAG.Network.{ConnectivityMonitor, DLQ}
 
   @default_max_retries 3
 
@@ -213,12 +214,14 @@ defmodule WebRAG.Crawler.Coordinator do
     max_concurrent = Keyword.get(opts, :max_concurrent, 5)
     max_retries = Keyword.get(opts, :max_retries, 3)
     persist_state = Keyword.get(opts, :persist_state, true)
+    load_dlq_on_start = Keyword.get(opts, :load_dlq_on_start, true)
 
     state = %{
       # Configuration
       max_concurrent: max_concurrent,
       max_retries: max_retries,
       persist_state: persist_state,
+      load_dlq_on_start: load_dlq_on_start,
 
       # Queue state
       pending_queue: :queue.new(),
@@ -239,7 +242,8 @@ defmodule WebRAG.Crawler.Coordinator do
       status: :idle,
       job_id: nil,
       started_at: nil,
-      paused_at: nil
+      paused_at: nil,
+      network_paused: false
     }
 
     # Load persisted state if available
@@ -250,11 +254,25 @@ defmodule WebRAG.Crawler.Coordinator do
         state
       end
 
+    # Subscribe to network connectivity events
+    ConnectivityMonitor.subscribe(self())
+
     {:ok, state, {:continue, :maybe_resume}}
   end
 
   @impl true
   def handle_continue(:maybe_resume, state) do
+    # Load failed URLs from DLQ if configured
+    state =
+      if state.load_dlq_on_start and DLQ.any?(:crawl) do
+        Logger.info("Loading failed URLs from DLQ for retry")
+        dlq_urls = DLQ.load(:crawl) |> Enum.map(& &1.operation_id)
+        new_queue = Enum.reduce(dlq_urls, state.pending_queue, &:queue.in(&1, &2))
+        Map.put(state, :pending_queue, new_queue)
+      else
+        state
+      end
+
     # Check if there was a crawl in progress and resume if appropriate
     if state.status == :crawling and :queue.is_empty(state.pending_queue) == false do
       Logger.info("Resuming previous crawl", job_id: state.job_id)
@@ -410,14 +428,19 @@ defmodule WebRAG.Crawler.Coordinator do
   @impl true
   def handle_cast(:resume_crawl, state) do
     if state.status == :paused do
-      Logger.info("Resuming crawl", job_id: state.job_id)
+      if ConnectivityMonitor.status().state == :offline do
+        Logger.warning("Cannot resume crawl: network is offline")
+        {:noreply, state}
+      else
+        Logger.info("Resuming crawl", job_id: state.job_id)
 
-      new_state =
-        state
-        |> Map.put(:status, :crawling)
-        |> Map.put(:paused_at, nil)
+        new_state =
+          state
+          |> Map.put(:status, :crawling)
+          |> Map.put(:paused_at, nil)
 
-      {:noreply, dispatch_work(new_state)}
+        {:noreply, dispatch_work(new_state)}
+      end
     else
       {:noreply, state}
     end
@@ -477,6 +500,7 @@ defmodule WebRAG.Crawler.Coordinator do
             |> Map.put(:pending_queue, new_queue)
             |> Map.put(:in_progress, new_in_progress)
             |> update_in([:completed], &MapSet.put(&1, url))
+            |> update_in([:crawled_urls], &MapSet.put(&1, url))
             |> update_in([:stats, :total_crawled], &(&1 + 1))
 
           pending = :queue.len(new_state_with_queue.pending_queue)
@@ -492,6 +516,12 @@ defmodule WebRAG.Crawler.Coordinator do
 
         {:error, reason} ->
           Logger.warning("Crawl failed: #{inspect(reason)}", url: url)
+
+          already_completed = MapSet.member?(state.completed, url)
+
+          unless already_completed do
+            DLQ.save(:crawl, url, reason)
+          end
 
           state
           |> Map.put(:in_progress, new_in_progress)
@@ -528,6 +558,22 @@ defmodule WebRAG.Crawler.Coordinator do
   end
 
   @impl true
+  def handle_cast(:resume_from_network, state) do
+    if state.status == :paused do
+      Logger.info("Resuming crawl after network recovery", job_id: state.job_id)
+
+      new_state =
+        state
+        |> Map.put(:status, :crawling)
+        |> Map.put(:paused_at, nil)
+
+      {:noreply, dispatch_work(new_state)}
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
   def handle_info(:dispatch_tick, state) do
     # Periodic dispatch check
     if state.status == :crawling do
@@ -535,6 +581,50 @@ defmodule WebRAG.Crawler.Coordinator do
     else
       {:noreply, state}
     end
+  end
+
+  @impl true
+  def handle_info({:network_status, :offline}, state) do
+    Logger.warning("Network offline detected, pausing crawl")
+
+    new_state =
+      state
+      |> Map.put(:status, :paused)
+      |> Map.put(:paused_at, DateTime.utc_now())
+      |> Map.put(:network_paused, true)
+
+    persist_state(new_state)
+
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info({:network_status, :online}, state) do
+    if state.network_paused do
+      Logger.info("Network online, resuming crawl after brief cooldown")
+
+      spawn(fn ->
+        Process.sleep(:timer.seconds(5))
+
+        GenServer.cast(__MODULE__, :resume_from_network)
+      end)
+
+      {:noreply, %{state | network_paused: false}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:network_status, :degraded, failures}, state) do
+    Logger.warning("Network degraded", consecutive_failures: failures)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:network_status, :recovering}, state) do
+    Logger.info("Network recovering, awaiting confirmation")
+    {:noreply, state}
   end
 
   @impl true
@@ -604,9 +694,29 @@ defmodule WebRAG.Crawler.Coordinator do
     max_retries = @default_max_retries
 
     spawn(fn ->
-      result = execute_with_retry(%{id: UUID.uuid4(), url: url}, max_retries)
+      result = execute_with_timeout(%{id: UUID.uuid4(), url: url}, max_retries)
       GenServer.cast(__MODULE__, {:crawl_complete, url, result})
     end)
+  end
+
+  defp execute_with_timeout(request, max_retries, timeout \\ 60_000) do
+    self_pid = self()
+
+    worker_pid =
+      spawn(fn ->
+        result = execute_with_retry(request, max_retries)
+        send(self_pid, {:worker_result, result})
+      end)
+
+    receive do
+      {:worker_result, result} ->
+        result
+    after
+      timeout ->
+        Logger.warning("Worker timed out, killing process", url: request.url, timeout_ms: timeout)
+        Process.exit(worker_pid, :kill)
+        {:error, :worker_timeout}
+    end
   end
 
   defp execute_with_retry(request, retries_left) do

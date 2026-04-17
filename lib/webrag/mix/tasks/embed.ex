@@ -29,6 +29,19 @@ defmodule Mix.Tasks.Embed do
     {:ok, _} = Application.ensure_all_started(:logger)
     {:ok, _} = Application.ensure_all_started(:webrag)
 
+    # Check if Ollama is available
+    unless WebRAG.LLM.Ollama.available?() do
+      IO.puts(:stderr, "")
+      IO.puts(:stderr, "✗ Ollama is not available at localhost:11434")
+      IO.puts(:stderr, "")
+      IO.puts("Please ensure Ollama is running:")
+      IO.puts("  1. Install Ollama: https://ollama.ai")
+      IO.puts("  2. Start Ollama: ollama serve")
+      IO.puts("  3. Pull a model: ollama pull mxbai-embed-large")
+      IO.puts("")
+      exit({:shutdown, 1})
+    end
+
     {opts, _, _} =
       OptionParser.parse(args,
         switches: [

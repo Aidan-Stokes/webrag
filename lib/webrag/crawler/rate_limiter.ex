@@ -115,9 +115,20 @@ defmodule WebRAG.Crawler.RateLimiter do
   This is a blocking call that should be used when you want to
   ensure rate limit compliance before making a request.
   """
-  @spec wait_for_token(GenServer.server(), timeout()) :: :ok
+  @spec wait_for_token(GenServer.server(), timeout()) ::
+          :ok | {:error, :timeout | :rate_limiter_down}
   def wait_for_token(server \\ __MODULE__, timeout \\ 30_000) do
-    GenServer.call(server, :wait_for_token, timeout)
+    try do
+      GenServer.call(server, :wait_for_token, timeout)
+    catch
+      :exit, {:timeout, _} ->
+        Logger.error("Rate limiter wait timed out, network may be down")
+        {:error, :timeout}
+
+      :exit, reason ->
+        Logger.error("Rate limiter crashed", reason: reason)
+        {:error, :rate_limiter_down}
+    end
   end
 
   @doc """

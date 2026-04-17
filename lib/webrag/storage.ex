@@ -353,7 +353,7 @@ defmodule WebRAG.Storage do
 
       if length(documents) > length(unique_docs) do
         duplicate_count = length(documents) - length(unique_docs)
-        IO.puts("  Found #{duplicate_count} duplicate URLs")
+        IO.puts("  Found #{duplicate_count} duplicate document URLs")
 
         File.rm!(pb_path)
 
@@ -365,13 +365,113 @@ defmodule WebRAG.Storage do
 
         IO.puts("  Rewrote documents.pb with #{length(unique_docs)} unique documents")
       else
-        IO.puts("  No duplicates found")
+        IO.puts("  Documents: no duplicates found")
       end
     else
       IO.puts("  No documents.pb found, skipping")
     end
 
     :ok
+  end
+
+  @doc """
+  Deduplicates chunks by chunk ID, keeping the first occurrence.
+  Rewrites chunks.pb with only unique chunks.
+  """
+  def deduplicate_chunks do
+    pb_path = Path.join([@data_dir, "chunks", "chunks.pb"])
+
+    if File.exists?(pb_path) do
+      chunks = load_pb_messages(pb_path, &Chunk.decode/1)
+
+      {unique_chunks, _seen} =
+        chunks
+        |> Enum.reduce({[], MapSet.new()}, fn chunk, {unique, seen} ->
+          if MapSet.member?(seen, chunk.id) do
+            {unique, seen}
+          else
+            {[chunk | unique], MapSet.put(seen, chunk.id)}
+          end
+        end)
+
+      if length(chunks) > length(unique_chunks) do
+        duplicate_count = length(chunks) - length(unique_chunks)
+        IO.puts("  Found #{duplicate_count} duplicate chunks")
+
+        File.rm!(pb_path)
+
+        unique_chunks
+        |> Enum.reverse()
+        |> Enum.each(fn chunk ->
+          append_pb_message(pb_path, Chunk.encode(chunk))
+        end)
+
+        IO.puts("  Rewrote chunks.pb with #{length(unique_chunks)} unique chunks")
+      else
+        IO.puts("  Chunks: no duplicates found")
+      end
+    else
+      IO.puts("  No chunks.pb found, skipping")
+    end
+
+    :ok
+  end
+
+  @doc """
+  Deduplicates embeddings by chunk ID, keeping the first occurrence.
+  Rewrites embeddings.pb with only unique embeddings.
+  """
+  def deduplicate_embeddings do
+    pb_path = Path.join([@data_dir, "embeddings", "embeddings.pb"])
+
+    if File.exists?(pb_path) do
+      embeddings = load_pb_messages(pb_path, &Embedding.decode/1)
+
+      {unique_embeddings, _seen} =
+        embeddings
+        |> Enum.reduce({[], MapSet.new()}, fn embedding, {unique, seen} ->
+          if MapSet.member?(seen, embedding.chunk_id) do
+            {unique, seen}
+          else
+            {[embedding | unique], MapSet.put(seen, embedding.chunk_id)}
+          end
+        end)
+
+      if length(embeddings) > length(unique_embeddings) do
+        duplicate_count = length(embeddings) - length(unique_embeddings)
+        IO.puts("  Found #{duplicate_count} duplicate embeddings")
+
+        File.rm!(pb_path)
+
+        unique_embeddings
+        |> Enum.reverse()
+        |> Enum.each(fn embedding ->
+          append_pb_message(pb_path, Embedding.encode(embedding))
+        end)
+
+        IO.puts("  Rewrote embeddings.pb with #{length(unique_embeddings)} unique embeddings")
+      else
+        IO.puts("  Embeddings: no duplicates found")
+      end
+    else
+      IO.puts("  No embeddings.pb found, skipping")
+    end
+
+    :ok
+  end
+
+  @doc """
+  Deduplicates all data files (documents, chunks, embeddings).
+  Returns summary of changes made.
+  """
+  def deduplicate_all do
+    IO.puts("Deduplicating all data...")
+
+    deduplicate_documents()
+    deduplicate_chunks()
+    deduplicate_embeddings()
+
+    IO.puts("Deduplication complete!")
   end
 
   @doc """

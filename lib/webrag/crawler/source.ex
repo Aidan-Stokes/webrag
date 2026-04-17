@@ -100,7 +100,209 @@ defmodule WebRAG.Crawler.Source do
   """
   @spec valid_url?(String.t(), t()) :: boolean()
   def valid_url?(url, %__MODULE__{} = source) do
-    within_scope?(url, source) and valid_uri?(url)
+    normalized = normalize_url(url)
+    within_scope?(normalized, source) and valid_uri?(normalized)
+  end
+
+  @doc """
+  Normalizes a URL to canonical form:
+  - Converts http:// to https://
+  - Converts aonprd.com to 2e.aonprd.com
+  - Removes trailing slashes
+  """
+  @spec normalize_url(String.t()) :: String.t()
+  def normalize_url(url) do
+    url
+    |> String.replace(~r/^http:\/\/aonprd\.com/i, "https://2e.aonprd.com")
+    |> String.replace(~r/^https?:\/\/aonprd\.com/i, "https://2e.aonprd.com")
+    |> String.replace(~r/^http:\/\//i, "https://")
+    |> String.trim_trailing("/")
+  end
+
+  @doc """
+  Pages that consistently return server errors (500, 404) and should be skipped.
+  These are listing/index pages that don't have content.
+  """
+  @spec blocklist_pages() :: [String.t()]
+  def blocklist_pages do
+    [
+      # Search pages
+      "Search.aspx",
+      "SearchOld.aspx",
+      # Display pages (need IDs)
+      "SourceDisplay.aspx",
+      "ArchetypeDisplay.aspx",
+      "SpellDisplay.aspx",
+      "ClassDisplay.aspx",
+      "RacesDisplay.aspx",
+      "MonsterDisplay.aspx",
+      "MythicMonsterDisplay.aspx",
+      "FeatDisplay.aspx",
+      "TraitDisplay.aspx",
+      "DeityDisplay.aspx",
+      "DomainDisplay.aspx",
+      "BloodlineDisplay.aspx",
+      "MysteryDisplay.aspx",
+      "WildbloodedDisplay.aspx",
+      "SpellbookDisplay.aspx",
+      "PoisonDisplay.aspx",
+      "ShadowPiercingsDisplay.aspx",
+      "MagicArmorDisplay.aspx",
+      "MagicWeaponsDisplay.aspx",
+      "MagicWondrousDisplay.aspx",
+      "MagicRingsDisplay.aspx",
+      "MagicStavesDisplay.aspx",
+      "MagicPotionsDisplay.aspx",
+      "MagicRodsDisplay.aspx",
+      "MagicArtifactsDisplay.aspx",
+      "MagicAltarsDisplay.aspx",
+      "MagicPlantsDisplay.aspx",
+      "MagicIntelligentDisplay.aspx",
+      "MagicThronesDisplay.aspx",
+      "MagicFavorsDisplay.aspx",
+      "MagicCursedDisplay.aspx",
+      "MagicFleshcraftingDisplay.aspx",
+      "MagicGenieSealsDisplay.aspx",
+      "MagicDemonicImplantsDisplay.aspx",
+      "MagicThassilonianRunesDisplay.aspx",
+      "MagicTattooDisplay.aspx",
+      "MagicScalingDisplay.aspx",
+      "MagicSetsDisplay.aspx",
+      "MagicDevilTalismansDisplay.aspx",
+      "MagicPlantsDisplay.aspx",
+      "EquipmentArmorDisplay.aspx",
+      "EquipmentWeaponsDisplay.aspx",
+      "EquipmentMiscDisplay.aspx",
+      "EquipmentTechArmorDisplay.aspx",
+      "EquipmentTechWeaponsDisplay.aspx",
+      "EquipmentTechPharmaceuticalsDisplay.aspx",
+      "EquipmentTechArtifactsDisplay.aspx",
+      "KineticistTalentsDisplay.aspx",
+      # Index pages (no content without ID)
+      "Spells.aspx",
+      "Feats.aspx",
+      "Actions.aspx",
+      "Classes.aspx",
+      "Races.aspx",
+      "Monsters.aspx",
+      "Traits.aspx",
+      "Rules.aspx",
+      "Equipment.aspx",
+      "MagicItems.aspx",
+      "SpellsCustom.aspx",
+      "MagicArmor.aspx",
+      "MagicWeapons.aspx",
+      "MagicWondrous.aspx",
+      "MagicRings.aspx",
+      "MagicStaves.aspx",
+      "MagicPotions.aspx",
+      "MagicRods.aspx",
+      "MagicArtifacts.aspx",
+      "MagicAltars.aspx",
+      "MagicPlants.aspx",
+      "MagicThrones.aspx",
+      "MagicFavors.aspx",
+      "MagicCursed.aspx",
+      "MagicFleshcrafting.aspx",
+      "MagicGenieSeals.aspx",
+      "MagicDemonicImplants.aspx",
+      "MagicThassilonianRunes.aspx",
+      "MagicTattoos.aspx",
+      "MagicScaling.aspx",
+      "MagicSets.aspx",
+      "MagicDevilTalismans.aspx",
+      "MagicIntelligent.aspx",
+      "MagicOther.aspx",
+      "SpecialMaterials.aspx",
+      "ConstructMods.aspx",
+      "Haunts.aspx",
+      "Traps.aspx",
+      "Madnesses.aspx",
+      "Corruptions.aspx",
+      "Drugs.aspx",
+      "Poisons.aspx",
+      "InfusedPoisons.aspx",
+      "Necrotoxins.aspx",
+      "AlchemicalReagents.aspx",
+      "DeityDetails.aspx",
+      "DeitiesByGroup.aspx",
+      "SorcererBloodlines.aspx",
+      "OracleCurses.aspx",
+      "OracleMysteries.aspx",
+      "ClericDomains.aspx",
+      "ClericVariantChanneling.aspx",
+      "DruidCompanions.aspx",
+      "InvestigatorTalents.aspx",
+      "RogueTalents.aspx",
+      "BarbarianRagePowers.aspx",
+      "MonkUCStyleStrikes.aspx",
+      "MonkUCKiPowers.aspx",
+      "GunslingerDeeds.aspx",
+      "GunslingerDares.aspx",
+      "PathAbilities.aspx",
+      "KineticistTalents.aspx",
+      "KineticistElements.aspx",
+      "AlchemistDiscoveries.aspx",
+      "BloodlineMutations.aspx",
+      "Wildblooded.aspx",
+      "Mythic.aspx",
+      "MythicPaths.aspx",
+      "MythicMonsters.aspx",
+      "PrestigeClasses.aspx",
+      "PrestigeClassesDisplay.aspx",
+      "ElementalAugmentations.aspx",
+      "FungalGrafts.aspx",
+      "Necrografts.aspx",
+      "ShadowPiercings.aspx",
+      "RandomBackground.aspx",
+      "RandomItemGenerator.aspx",
+      "Annointings.aspx",
+      "Default.aspx",
+      "UMR.aspx",
+      "ClassSamples.aspx",
+      "EarnIncomeCalc.aspx",
+      "FAQ.aspx",
+      "Tools.aspx",
+      "Projects.aspx",
+      "CombatStamina.aspx",
+      "MasterSummonList.aspx",
+      "SpellDefinitions.aspx",
+      "UMR.aspx",
+      "RogueTalents.aspx",
+      "MonsterTypes.aspx",
+      "MonsterSubtypes.aspx",
+      "EquipmentArmor.aspx",
+      "EquipmentWeapons.aspx",
+      "EquipmentMisc.aspx",
+      "EquipmentTech.aspx",
+      "EquipmentTechMisc.aspx",
+      "EquipmentTechWeapons.aspx",
+      "EquipmentTechArmor.aspx",
+      "EquipmentTechPharamaceuticals.aspx",
+      "EquipmentTechPharmaceuticals.aspx",
+      "EquipmentTechCybertech.aspx",
+      "EquipmentTechArtifacts.aspx",
+      "Spellbooks.aspx",
+      "OccultRituals.aspx",
+      "FAQs.aspx",
+      "MagicJujuFetishes.aspx"
+    ]
+  end
+
+  @doc """
+  Checks if a URL points to a blocklisted page.
+  """
+  @spec blocklisted?(String.t()) :: boolean()
+  def blocklisted?(url) do
+    Enum.any?(blocklist_pages(), &String.contains?(url, &1))
+  end
+
+  @doc """
+  Checks if a URL has invalid characters (like backslashes).
+  """
+  @spec has_invalid_chars?(String.t()) :: boolean()
+  def has_invalid_chars?(url) do
+    String.contains?(url, "\\")
   end
 
   defp valid_uri?(url) do

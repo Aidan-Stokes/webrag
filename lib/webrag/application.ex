@@ -123,7 +123,17 @@ defmodule WebRAG.Application do
       burst_size =
         Application.get_env(:webrag, :crawler_burst_size, 25)
 
+      check_interval =
+        Application.get_env(:webrag, :network_check_interval, :timer.seconds(30))
+
       [
+        # Network connectivity monitor (pipeline-wide)
+        {WebRAG.Network.ConnectivityMonitor,
+         [
+           check_interval: check_interval,
+           failure_threshold: 3,
+           probe_url: "https://2e.aonprd.com/"
+         ]},
         # Rate limiter to respect source server
         {WebRAG.Crawler.RateLimiter, rate_limit: rate_limit, burst_size: burst_size},
         # Worker pool supervisor

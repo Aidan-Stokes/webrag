@@ -218,12 +218,11 @@ defmodule WebRAG.Crawler.Worker do
   # ============================================================================
 
   defp wait_for_rate_limit do
-    RateLimiter.wait_for_token()
-    :ok
-  rescue
-    e ->
-      Logger.warning("Rate limiter error", error: Exception.message(e))
-      {:error, :rate_limit_timeout}
+    case RateLimiter.wait_for_token() do
+      :ok -> :ok
+      {:error, :timeout} -> {:error, :rate_limit_timeout}
+      {:error, :rate_limiter_down} -> {:error, :rate_limiter_down}
+    end
   end
 
   defp validate_response(%{status: status}) when status in 200..299, do: :ok

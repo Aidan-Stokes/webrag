@@ -13,11 +13,11 @@ defmodule WebRAG.Chunk do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   schema "chunks" do
-    field :content_id, :binary_id
-    field :text, :string
-    field :chunk_index, :integer
-    field :total_chunks, :integer
-    field :metadata, :map
+    field(:content_id, :binary_id)
+    field(:text, :string)
+    field(:chunk_index, :integer)
+    field(:total_chunks, :integer)
+    field(:metadata, :map)
 
     timestamps(type: :utc_datetime)
   end

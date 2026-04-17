@@ -2,6 +2,7 @@ defmodule Mix.Tasks.Discover do
   require Logger
   alias WebRAG.Storage
   alias WebRAG.UI
+  alias WebRAG.Network
 
   @moduledoc """
   Discovers URLs from configured or custom sources.
@@ -45,6 +46,30 @@ defmodule Mix.Tasks.Discover do
     {:ok, _} = Application.ensure_all_started(:jason)
     {:ok, _} = Application.ensure_all_started(:finch)
     {:ok, _} = Application.ensure_all_started(:webrag)
+
+    # Start connectivity monitor
+    if !Process.whereis(WebRAG.Network.ConnectivityMonitor) do
+      {:ok, _} = WebRAG.Network.ConnectivityMonitor.start_link([])
+    end
+
+    # Check connectivity before starting
+    if !Network.HealthCheck.online?() do
+      IO.puts(:stderr, "")
+      IO.puts(:stderr, "⚠ Network appears to be offline")
+      IO.puts(:stderr, "")
+      IO.puts("Attempting to wait for connectivity...")
+
+      case Network.HealthCheck.wait_until_online(timeout: :timer.minutes(2)) do
+        :ok ->
+          IO.puts("✓ Network connectivity restored")
+
+        {:error, :timeout} ->
+          IO.puts(:stderr, "")
+          IO.puts(:stderr, "✗ Network did not come back online. Discovery may fail.")
+          IO.puts("Run 'mix network.status' to check connectivity.")
+          IO.puts("")
+      end
+    end
 
     {opts, _, _} =
       OptionParser.parse(args,

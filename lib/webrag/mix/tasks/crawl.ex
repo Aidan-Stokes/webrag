@@ -86,16 +86,15 @@ defmodule Mix.Tasks.Crawl do
 
     urls_to_crawl =
       discovered_urls
+      |> Enum.map(&WebRAG.Crawler.Source.normalize_url/1)
       |> Enum.reject(&MapSet.member?(already_crawled, &1))
       |> Enum.reject(&invalid_url?/1)
+      |> Enum.reject(&WebRAG.Crawler.Source.blocklisted?/1)
+      |> Enum.reject(&WebRAG.Crawler.Source.has_invalid_chars?/1)
+      |> Enum.uniq()
 
     invalid_count =
-      length(discovered_urls) -
-        length(
-          discovered_urls
-          |> Enum.reject(&MapSet.member?(already_crawled, &1))
-          |> Enum.reject(&invalid_url?/1)
-        )
+      length(discovered_urls) - length(urls_to_crawl)
 
     IO.puts(
       "Found #{length(discovered_urls)} discovered URLs, #{length(urls_to_crawl)} new to crawl (#{invalid_count} invalid filtered)"

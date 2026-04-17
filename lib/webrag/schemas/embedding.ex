@@ -1,4 +1,3 @@
-
 defmodule WebRAG.Embedding do
   @moduledoc """
   Schema for storing vector embeddings with metadata.
@@ -56,4 +55,3 @@ defmodule WebRAG.Embedding do
     |> validate_required([:chunk_id, :content_id, :vector, :model])
   end
 end
-

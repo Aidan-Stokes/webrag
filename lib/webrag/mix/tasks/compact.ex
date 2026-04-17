@@ -1,16 +1,29 @@
 defmodule Mix.Tasks.Compact do
   @moduledoc """
-  Alias for mix transform - exports Protocol Buffer files to JSON.
+  Compacts Protocol Buffer files by removing duplicates and exporting to JSON.
 
   ## Usage
 
       mix compact
 
-  See `mix help transform` for options.
+  Deduplicates and exports all .pb files to human-readable .json.
+  See `mix help transform` for full options.
+
+  ## Options
+
+      --no-dedup         Skip deduplication step
+      --dedup-only       Only deduplicate, skip JSON export
+      --type <type>      Deduplicate only specific type: documents, chunks, embeddings, or all
+
+  ## Examples
+
+      mix compact
+      mix compact --dedup-only
+      mix compact --type chunks
   """
   use Mix.Task
 
-  @shortdoc "Alias for mix transform"
+  @shortdoc "Compact .pb files"
 
   @impl true
   def run(args) do

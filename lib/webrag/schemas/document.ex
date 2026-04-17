@@ -13,13 +13,13 @@ defmodule WebRAG.Document do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   schema "documents" do
-    field :url, :string
-    field :source, :string
-    field :title, :string
-    field :type, :string
-    field :raw_html, :string
-    field :text, :string
-    field :processed_at, :utc_datetime
+    field(:url, :string)
+    field(:source, :string)
+    field(:title, :string)
+    field(:type, :string)
+    field(:raw_html, :string)
+    field(:text, :string)
+    field(:processed_at, :utc_datetime)
 
     timestamps(type: :utc_datetime)
   end
