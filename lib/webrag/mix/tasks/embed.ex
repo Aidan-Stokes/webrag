@@ -1,57 +1,128 @@
-defmodule Mix.Tasks.Search.BuildIdf do
+defmodule Mix.Tasks.Embed do
   @moduledoc """
-  Builds IDF (Inverse Document Frequency) index for TF-IDF scoring.
-
-  This analyzes all indexed chunks to compute how rare/common each term is,
-  which improves search relevance by boosting rare terms and penalizing common ones.
+  Generates vector embeddings for indexed chunks.
 
   ## Usage
 
-      mix search.build_idf
+      mix embed
 
-  ## What it does
+  ## Options
 
-  1. Loads all indexed chunks
-  2. Extracts unique terms from each chunk
-  3. Computes IDF scores: log(total_chunks / documents_containing_term)
-  4. Saves IDF data to data/idf_terms.pb
-
-  Run this after:
-  - Running mix embed (to index new content)
-  - Any data crawl/index cycle
+      - `--batch-size <n>` - Number of embeddings per batch. Default: 100.
+      - `--only-missing` - Only embed chunks that don't have embeddings yet.
 
   ## Examples
 
-      mix search.build_idf
+      mix embed
+      mix embed --batch-size 256
+      mix embed --only-missing
   """
   use Mix.Task
   require Logger
 
-  alias WebRAG.Search.IDFScorer
+  alias WebRAG.Network.DLQ
 
-  @shortdoc "Build IDF index for search"
+  @shortdoc "Generate vector embeddings"
+
+  @default_batch_size 20
+
+  @progress_ets :webrag_embed_progress
 
   @impl true
-  def run(_args) do
+  def run(args) do
     {:ok, _} = Application.ensure_all_started(:logger)
     {:ok, _} = Application.ensure_all_started(:webrag)
 
-    Logger.info("Building IDF index...")
+    {opts, _query_args, _} =
+      OptionParser.parse(args,
+        switches: [
+          batch_size: :integer,
+          only_missing: :boolean
+        ],
+        aliases: [b: :batch_size]
+      )
 
-    chunks = WebRAG.Storage.load_chunks()
+    batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
+    only_missing = Keyword.get(opts, :only_missing, false)
+
+    Logger.info("Embedding batch size: #{batch_size}")
+
+    chunks =
+      if only_missing do
+        Logger.info("Processing only missing embeddings...")
+        WebRAG.Storage.chunks_without_embeddings()
+      else
+        Logger.info("Processing all chunks...")
+        WebRAG.Storage.load_chunks()
+      end
 
     if length(chunks) == 0 do
-      Logger.error("No chunks found. Run mix embed first.")
-      exit({:shutdown, 1})
+      Logger.info("No chunks to embed.")
+      exit({:shutdown, 0})
     end
 
-    Logger.info("Analyzing #{length(chunks)} chunks...")
+    Logger.info("Embedding #{length(chunks)} chunks...")
+    Logger.info("This may take a while...")
 
-    idf_map = IDFScorer.compute_idf(chunks)
+    :ets.new(@progress_ets, [:set, :named_table, :public])
 
-    Logger.info("Computed #{map_size(idf_map)} unique terms")
+    result =
+      case WebRAG.Indexer.EmbeddingClient.embed_batch(chunks, batch_size: batch_size) do
+        {:ok, count} ->
+          Logger.info("Embedded #{count} chunks")
 
-    # Save to storage
+          # Build IDF index after embedding
+          Logger.info("Building IDF index...")
+          build_idf_index()
+
+          {:ok, count}
+
+        {:error, reason} ->
+          Logger.error("Embedding failed: #{inspect(reason)}")
+          DLQ.save(:embed, "batch", reason, %{})
+          {:error, reason}
+      end
+
+    :ets.delete(@progress_ets)
+    result
+  end
+
+  defp build_idf_index do
+    alias WebRAG.Search.IDFScorer
+
+    chunks = WebRAG.Storage.load_chunks()
+    total_docs = length(chunks)
+
+    Logger.info("Computing IDF for #{total_docs} chunks...")
+
+    freq_map =
+      Enum.reduce(chunks, %{}, fn chunk, acc ->
+        terms =
+          chunk.text
+          |> String.downcase()
+          |> String.replace(~r/[^\w\s]/, "")
+          |> String.split()
+          |> Enum.filter(fn w -> String.length(w) > 2 end)
+          |> Enum.map(fn w -> stem_word(w) end)
+          |> Enum.uniq()
+
+        Enum.reduce(terms, acc, fn term, inner_acc ->
+          Map.update(inner_acc, term, 1, &(&1 + 1))
+        end)
+      end)
+
+    Logger.info("Found #{map_size(freq_map)} unique terms")
+
+    idf_map =
+      freq_map
+      |> Enum.map(fn {term, freq} ->
+        safe_freq = max(freq, 1)
+        idf = :math.log(total_docs / safe_freq)
+        {term, %{frequency: freq, idf: idf}}
+      end)
+      |> Map.new()
+
+    # Save IDF
     json_path = Path.join(["data", "idf_terms.json"])
 
     data =
@@ -61,19 +132,9 @@ defmodule Mix.Tasks.Search.BuildIdf do
 
     File.write!(json_path, Jason.encode!(data, pretty: true))
     Logger.info("IDF index saved to data/idf_terms.json")
+  end
 
-    # Show some example IDF scores
-    example_terms = ["orc", "boost", "attribute", "character", "genie", "spell", "mechanics"]
-    Logger.info("Sample IDF scores:")
-
-    Enum.each(example_terms, fn term ->
-      data = Map.get(idf_map, term)
-
-      if data do
-        Logger.info("  #{term}: frequency=#{data[:frequency]}, idf=#{Float.round(data[:idf], 3)}")
-      else
-        Logger.info("  #{term}: not found")
-      end
-    end)
+  defp stem_word(word) do
+    String.replace(word, ~r/(s|es|ed|ing|'s|'s)$/, "")
   end
 end
