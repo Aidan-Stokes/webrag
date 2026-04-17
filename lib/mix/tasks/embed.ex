@@ -16,10 +16,13 @@ defmodule Mix.Tasks.Embed do
       mix embed --batch-size 256
   """
   use Mix.Task
+  require Logger
 
   @shortdoc "Generate vector embeddings"
 
-  @default_batch_size 100
+  @default_batch_size 20
+
+  @progress_ets :aoncrawler_embed_progress
 
   @impl true
   def run(args) do
@@ -57,13 +60,39 @@ defmodule Mix.Tasks.Embed do
       Application.get_env(:aoncrawler, :indexer)[:max_concurrent_batches] ||
         System.schedulers_online()
 
+    batches = Enum.chunk_every(chunks, batch_size)
+    total_batches = length(batches)
+
+    if :ets.info(@progress_ets) == :undefined do
+      :ets.new(@progress_ets, [:set, :named_table, :public])
+    else
+      :ets.delete_all_objects(@progress_ets)
+    end
+
+    :ets.insert(@progress_ets, {:stats, 0, 0})
+
     IO.puts("Processing with #{max_concurrent} concurrent batches...")
     IO.puts("")
 
+    progress_task =
+      spawn(fn ->
+        loop_embed_progress(total_batches)
+      end)
+
     embeddings =
-      chunks
-      |> Stream.chunk_every(batch_size)
-      |> Task.async_stream(&generate_batch_embeddings/1,
+      batches
+      |> Task.async_stream(
+        fn batch ->
+          case generate_batch_embeddings(batch) do
+            [] ->
+              :ets.update_counter(@progress_ets, :stats, {3, 1})
+              []
+
+            results ->
+              :ets.update_counter(@progress_ets, :stats, {2, 1})
+              results
+          end
+        end,
         max_concurrent: max_concurrent,
         timeout: :infinity
       )
@@ -72,10 +101,13 @@ defmodule Mix.Tasks.Embed do
           results
 
         {:error, reason} ->
-          IO.puts(:stderr, "Batch failed: #{inspect(reason)}")
+          Logger.error("Batch embedding failed: #{inspect(reason)}")
+          :ets.update_counter(@progress_ets, :stats, {3, 1})
           []
       end)
       |> Enum.flat_map(& &1)
+
+    send(progress_task, :stop)
 
     IO.puts("Generated #{length(embeddings)} embeddings")
 
@@ -101,19 +133,45 @@ defmodule Mix.Tasks.Embed do
               Application.get_env(
                 :aoncrawler,
                 [:indexer, :embedding_model],
-                "text-embedding-3-small"
+                "mxbai-embed-large"
               ),
             token_count: estimate_tokens(chunk.text)
           }
         end)
 
       {:error, reason} ->
-        IO.puts(:stderr, "Embedding failed: #{inspect(reason)}")
+        Logger.error("Embedding failed: #{inspect(reason)}")
+        []
+
+      other ->
+        Logger.error("Unexpected response: #{inspect(other)}")
         []
     end
   end
 
   defp estimate_tokens(text) do
     ceil(String.length(text) / 4)
+  end
+
+  defp loop_embed_progress(total_batches) do
+    receive do
+      :stop -> :ok
+    after
+      500 ->
+        [{:stats, completed, failed}] = :ets.lookup(@progress_ets, :stats)
+        percent = completed / total_batches
+
+        bar_width = 30
+        filled = round(bar_width * percent)
+        bar = String.duplicate("█", filled) <> String.duplicate("░", bar_width - filled)
+
+        percent_str = :io_lib.format("~.1f", [percent * 100.0]) |> IO.chardata_to_string()
+
+        IO.write(
+          "\r[#{bar}] #{percent_str}% | Completed: #{completed}/#{total_batches} | Failed: #{failed}  "
+        )
+
+        loop_embed_progress(total_batches)
+    end
   end
 end

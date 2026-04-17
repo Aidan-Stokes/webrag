@@ -99,22 +99,58 @@ defmodule AONCrawler.Indexer.EmbeddingClient do
     model = Keyword.get(opts, :model, @default_model)
     batch_size = Keyword.get(opts, :batch_size, @max_batch_size)
 
-    texts
-    |> Enum.chunk_every(batch_size)
-    |> Enum.flat_map(fn batch ->
-      case embed_batch_request(batch, model) do
-        {:ok, embeddings} ->
-          embeddings
+    client = openai_client()
 
-        {:error, reason} ->
-          Logger.error("Batch embedding failed", error: inspect(reason))
-          []
+    if client do
+      case client do
+        AONCrawler.LLM.Ollama ->
+          ollama_model =
+            Application.get_env(:aoncrawler, [:indexer, :embedding_model], "mxbai-embed-large")
+
+          do_embed_batch_ollama(texts, ollama_model, batch_size)
+
+        _ ->
+          texts
+          |> Enum.chunk_every(batch_size)
+          |> Enum.flat_map(fn batch ->
+            case embed_batch_request(batch, model) do
+              {:ok, embeddings} ->
+                embeddings
+
+              {:error, reason} ->
+                Logger.error("Batch embedding failed", error: inspect(reason))
+                []
+            end
+          end)
+          |> then(fn
+            [] -> {:error, :all_batches_failed}
+            embeddings -> {:ok, embeddings}
+          end)
       end
-    end)
-    |> then(fn
-      [] -> {:error, :all_batches_failed}
-      embeddings -> {:ok, embeddings}
-    end)
+    else
+      {:error, :not_configured}
+    end
+  end
+
+  defp do_embed_batch_ollama(texts, model, _batch_size) do
+    results =
+      Enum.map(texts, fn text ->
+        case AONCrawler.LLM.Ollama.embed(text, model: model) do
+          {:ok, embedding} -> {:ok, embedding}
+          {:error, _} -> {:error, :failed}
+        end
+      end)
+      |> Enum.filter(fn
+        {:ok, _} -> true
+        _ -> false
+      end)
+      |> Enum.map(fn {:ok, emb} -> emb end)
+
+    if length(results) == length(texts) do
+      {:ok, results}
+    else
+      {:error, :all_batches_failed}
+    end
   end
 
   @doc """
@@ -147,16 +183,22 @@ defmodule AONCrawler.Indexer.EmbeddingClient do
     client = openai_client()
 
     if client do
-      case client.embedding_create(%{
-             model: model,
-             input: text
-           }) do
-        {:ok, response} ->
-          embedding = extract_embedding(response)
-          {:ok, embedding}
+      case client do
+        AONCrawler.LLM.Ollama ->
+          client.embed(text, model: model)
 
-        {:error, reason} ->
-          {:error, reason}
+        _ ->
+          case client.embedding_create(%{
+                 model: model,
+                 input: text
+               }) do
+            {:ok, response} ->
+              embedding = extract_embedding(response)
+              {:ok, embedding}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
       end
     else
       {:error, :not_configured}
@@ -173,16 +215,22 @@ defmodule AONCrawler.Indexer.EmbeddingClient do
     client = openai_client()
 
     if client do
-      case client.embedding_create(%{
-             model: model,
-             input: texts
-           }) do
-        {:ok, response} ->
-          embeddings = extract_batch_embeddings(response)
-          {:ok, embeddings}
+      case client do
+        AONCrawler.LLM.Ollama ->
+          client.embed_batch(texts, model: model)
 
-        {:error, reason} ->
-          {:error, reason}
+        _ ->
+          case client.embedding_create(%{
+                 model: model,
+                 input: texts
+               }) do
+            {:ok, response} ->
+              embeddings = extract_batch_embeddings(response)
+              {:ok, embeddings}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
       end
     else
       {:error, :not_configured}
@@ -210,6 +258,14 @@ defmodule AONCrawler.Indexer.EmbeddingClient do
   end
 
   defp openai_client do
-    Application.get_env(:aoncrawler, :openai_client)
+    case Application.get_env(:aoncrawler, :openai_client) do
+      nil ->
+        if Application.get_env(:aoncrawler, :use_ollama, true) do
+          AONCrawler.LLM.Ollama
+        end
+
+      client ->
+        client
+    end
   end
 end

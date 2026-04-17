@@ -561,7 +561,7 @@ defmodule AONCrawler.Indexer.BatchProcessor do
       Application.get_env(
         :aoncrawler,
         [AONCrawler.Indexer, :embedding_model],
-        "text-embedding-3-small"
+        "mxbai-embed-large"
       )
 
     embedding = %Embedding{

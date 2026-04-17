@@ -54,6 +54,7 @@ defmodule AONCrawler.Storage do
 
   @doc """
   Appends a document to Protocol Buffer and JSON files.
+  Skips if URL already exists to prevent duplicates.
   """
   def append_document(%{
         id: id,
@@ -62,6 +63,25 @@ defmodule AONCrawler.Storage do
         content_type: content_type,
         metadata: metadata
       }) do
+    if url_exists?(url) do
+      :skipped
+    else
+      do_append_document(id, url, text, content_type, metadata)
+    end
+  end
+
+  defp url_exists?(url) do
+    pb_path = Path.join([@data_dir, "documents", "documents.pb"])
+
+    if File.exists?(pb_path) do
+      load_pb_messages(pb_path, &Document.decode/1)
+      |> Enum.any?(&(&1.url == url))
+    else
+      false
+    end
+  end
+
+  defp do_append_document(id, url, text, content_type, metadata) do
     ensure_directories()
 
     pb_path = Path.join([@data_dir, "documents", "documents.pb"])
@@ -308,6 +328,49 @@ defmodule AONCrawler.Storage do
     IO.puts("  Exported #{length(embeddings)} embeddings")
 
     IO.puts("Export complete!")
+    :ok
+  end
+
+  @doc """
+  Deduplicates documents by URL, keeping the first occurrence.
+  Rewrites documents.pb with only unique URLs.
+  """
+  def deduplicate_documents do
+    pb_path = Path.join([@data_dir, "documents", "documents.pb"])
+
+    if File.exists?(pb_path) do
+      documents = load_pb_messages(pb_path, &Document.decode/1)
+
+      {unique_docs, _seen} =
+        documents
+        |> Enum.reduce({[], MapSet.new()}, fn doc, {unique, seen} ->
+          if MapSet.member?(seen, doc.url) do
+            {unique, seen}
+          else
+            {[doc | unique], MapSet.put(seen, doc.url)}
+          end
+        end)
+
+      if length(documents) > length(unique_docs) do
+        duplicate_count = length(documents) - length(unique_docs)
+        IO.puts("  Found #{duplicate_count} duplicate URLs")
+
+        File.rm!(pb_path)
+
+        unique_docs
+        |> Enum.reverse()
+        |> Enum.each(fn doc ->
+          append_pb_message(pb_path, Document.encode(doc))
+        end)
+
+        IO.puts("  Rewrote documents.pb with #{length(unique_docs)} unique documents")
+      else
+        IO.puts("  No duplicates found")
+      end
+    else
+      IO.puts("  No documents.pb found, skipping")
+    end
+
     :ok
   end
 
