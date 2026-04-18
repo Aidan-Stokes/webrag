@@ -51,79 +51,78 @@ defmodule WebRAG.Search do
     max_per_doc = Keyword.get(opts, :max_per_doc, @default_max_per_doc)
     source_filter = Keyword.get(opts, :source, nil)
 
-    chunks = WebRAG.Storage.load_chunks()
-    chunk_map = Enum.reduce(chunks, %{}, fn c, acc -> Map.put(acc, c.id, c) end)
+    if WebRAG.Indexer.VectorStore.loaded?() == false do
+      WebRAG.Indexer.VectorStore.load_embeddings()
+    end
 
-    # Filter chunk map by source if specified
-    chunk_map =
-      if source_filter do
-        Map.filter(chunk_map, fn {_id, chunk} ->
-          url = chunk.metadata["url"] || ""
-          String.contains?(url, source_filter)
-        end)
-      else
-        chunk_map
-      end
+    qv = get_or_create_embedding(query)
 
-    if map_size(chunk_map) == 0 do
-      {:ok, []}
-    else
-      if WebRAG.Indexer.VectorStore.loaded?() == false do
-        WebRAG.Indexer.VectorStore.load_embeddings()
-      end
+    case qv do
+      nil ->
+        {:error, :embedding_failed}
 
-      qv = get_or_create_embedding(query)
+      _ ->
+        kw = extract_keywords(query)
+        idf = load_idf_terms()
 
-      case qv do
-        nil ->
-          {:error, :embedding_failed}
+        # Get vector search results with source filtering at VectorStore level
+        case WebRAG.Indexer.VectorStore.search(qv,
+               top_k: top_k * 5,
+               min_score: min_score * 0.3,
+               source: source_filter
+             ) do
+          _ ->
+            kw = extract_keywords(query)
+            idf = load_idf_terms()
 
-        _ ->
-          kw = extract_keywords(query)
-          idf = load_idf_terms()
+            # Search VectorStore (which now has chunk metadata too)
+            case WebRAG.Indexer.VectorStore.search(qv,
+                   top_k: top_k * 5,
+                   min_score: min_score * 0.3,
+                   source: source_filter
+                 ) do
+              [] ->
+                {:ok, []}
 
-          # Get chunk IDs to search (for source filtering)
-          _chunk_ids = Map.keys(chunk_map)
+              vector_results ->
+                # Build chunk map from storage for getting text/metadata
+                chunks = WebRAG.Storage.load_chunks()
+                chunk_map = Enum.reduce(chunks, %{}, fn c, acc -> Map.put(acc, c.id, c) end)
 
-          case WebRAG.Indexer.VectorStore.search(qv, top_k: top_k * 5, min_score: min_score * 0.3) do
-            [] ->
-              {:ok, []}
+                results =
+                  Enum.map(vector_results, fn vr ->
+                    chunk = Map.get(chunk_map, vr.chunk_id)
 
-            vector_results ->
-              results =
-                Enum.map(vector_results, fn vr ->
-                  chunk = Map.get(chunk_map, vr.chunk_id)
-                  # Skip if chunk not in filtered source
-                  unless chunk do
-                    nil
-                  else
-                    txt = chunk.text
-                    doc_id = chunk.document_id
-                    ts = tfidf(txt, kw, idf)
+                    unless chunk do
+                      nil
+                    else
+                      txt = chunk.text
+                      doc_id = chunk.document_id
+                      ts = tfidf(txt, kw, idf)
 
-                    %{
-                      score: (1 - @keyword_weight) * vr.score + @keyword_weight * ts,
-                      embed_score: vr.score,
-                      keyword_score: ts,
-                      text: txt,
-                      chunk_id: vr.chunk_id,
-                      document_id: doc_id,
-                      metadata: chunk.metadata || %{}
-                    }
-                  end
-                end)
-                |> Enum.reject(&is_nil/1)
+                      %{
+                        score: (1 - @keyword_weight) * vr.score + @keyword_weight * ts,
+                        embed_score: vr.score,
+                        keyword_score: ts,
+                        text: txt,
+                        chunk_id: vr.chunk_id,
+                        document_id: doc_id,
+                        metadata: chunk.metadata || %{}
+                      }
+                    end
+                  end)
+                  |> Enum.reject(&is_nil/1)
 
-              filtered = Enum.filter(results, fn r -> r.score >= min_score end)
-              sorted = Enum.sort_by(filtered, fn r -> r.score end, :desc)
-              limited = Enum.take(sorted, top_k * 3)
-              final = diverse_results(limited, top_k, max_per_doc)
-              {:ok, final}
+                filtered = Enum.filter(results, fn r -> r.score >= min_score end)
+                sorted = Enum.sort_by(filtered, fn r -> r.score end, :desc)
+                limited = Enum.take(sorted, top_k * 3)
+                final = diverse_results(limited, top_k, max_per_doc)
+                {:ok, final}
 
-            {:error, reason} ->
-              {:error, reason}
-          end
-      end
+              {:error, reason} ->
+                {:error, reason}
+            end
+        end
     end
   end
 

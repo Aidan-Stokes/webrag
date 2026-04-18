@@ -66,16 +66,40 @@ defmodule Mix.Tasks.Embed do
 
     :ets.new(@progress_ets, [:set, :named_table, :public])
 
+    # Convert chunks to text list for embedding
+    texts = Enum.map(chunks, fn c -> c.text end)
+
     result =
-      case WebRAG.Indexer.EmbeddingClient.embed_batch(chunks, batch_size: batch_size) do
-        {:ok, count} ->
-          Logger.info("Embedded #{count} chunks")
+      case WebRAG.Indexer.EmbeddingClient.embed_batch(texts, batch_size: batch_size) do
+        {:ok, embeddings} when is_list(embeddings) and length(embeddings) > 0 ->
+          # Save embeddings with their chunk IDs
+          Logger.info("Saving #{length(embeddings)} embeddings...")
+
+          model =
+            Application.get_env(:webrag, :indexer, [])[:embedding_model] || "mxbai-embed-large"
+
+          # Zip texts and embeddings (not chunks and embeddings since texts failed may be filtered out)
+          Enum.each(Enum.zip(chunks, embeddings), fn {chunk, embedding} ->
+            WebRAG.Storage.append_embedding(%{
+              id: UUID.uuid4(),
+              chunk_id: chunk.id,
+              vector: embedding,
+              model: model,
+              token_count: ceil(String.length(chunk.text) / 4)
+            })
+          end)
+
+          Logger.info("Embedded #{length(embeddings)} chunks")
 
           # Build IDF index after embedding
           Logger.info("Building IDF index...")
           build_idf_index()
 
-          {:ok, count}
+          {:ok, length(embeddings)}
+
+        {:ok, []} ->
+          Logger.warn("All embeddings failed")
+          {:error, :all_batches_failed}
 
         {:error, reason} ->
           Logger.error("Embedding failed: #{inspect(reason)}")

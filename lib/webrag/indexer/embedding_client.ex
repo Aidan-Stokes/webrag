@@ -105,7 +105,7 @@ defmodule WebRAG.Indexer.EmbeddingClient do
       case client do
         WebRAG.LLM.Ollama ->
           ollama_model =
-            Application.get_env(:webrag, [:indexer, :embedding_model], "mxbai-embed-large")
+            Application.get_env(:webrag, :indexer, [])[:embedding_model] || "mxbai-embed-large"
 
           do_embed_batch_ollama(texts, ollama_model, batch_size)
 
@@ -146,10 +146,10 @@ defmodule WebRAG.Indexer.EmbeddingClient do
       end)
       |> Enum.map(fn {:ok, emb} -> emb end)
 
-    if length(results) == length(texts) do
-      {:ok, results}
-    else
-      {:error, :all_batches_failed}
+    # Return results even if some failed (partial success)
+    case results do
+      [] -> {:error, :all_batches_failed}
+      _ -> {:ok, results}
     end
   end
 

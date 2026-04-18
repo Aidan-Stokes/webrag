@@ -448,6 +448,79 @@ defmodule WebRAG.Storage do
   end
 
   @doc """
+  Returns the set of all embedded chunk IDs for quick lookup.
+  """
+  @spec embedded_chunk_ids() :: MapSet.t()
+  def embedded_chunk_ids do
+    load_embeddings()
+    |> Enum.map(& &1.chunk_id)
+    |> MapSet.new()
+  end
+
+  @doc """
+  Returns chunks newer than a given timestamp or cursor.
+  Useful for incremental updates.
+
+  ## Parameters
+    - after_timestamp: Unix timestamp to get chunks after
+    - after_id: Get chunks after this ID (for pagination)
+
+  ## Example
+      # Get chunks added since last sync
+      newer_chunks = load_chunks_since(1713400000)
+  """
+  @spec load_chunks_since(integer() | nil) :: [any()]
+  def load_chunks_since(after_timestamp) when is_nil(after_timestamp) do
+    load_chunks()
+  end
+
+  def load_chunks_since(after_timestamp) when is_integer(after_timestamp) do
+    load_chunks()
+    |> Enum.filter(fn chunk ->
+      chunk.metadata && chunk.metadata["timestamp"] &&
+        chunk.metadata["timestamp"] > after_timestamp
+    end)
+  end
+
+  @doc """
+  Gets the latest chunk timestamp for incremental sync.
+  """
+  @spec latest_chunk_timestamp() :: integer() | nil
+  def latest_chunk_timestamp do
+    chunks = load_chunks()
+
+    if chunks == [] do
+      nil
+    else
+      chunks
+      |> Enum.map(fn c ->
+        if c.metadata && c.metadata["timestamp"],
+          do: String.to_integer(c.metadata["timestamp"]),
+          else: 0
+      end)
+      |> Enum.max()
+    end
+  end
+
+  @doc """
+  Checks if a document has already been indexed (chunks exist).
+  """
+  @spec document_indexed?(String.t()) :: boolean()
+  def document_indexed?(document_id) do
+    chunks = load_chunks()
+    Enum.any?(chunks, fn c -> c.document_id == document_id end)
+  end
+
+  @doc """
+  Returns chunks for a specific document.
+  """
+  @spec chunks_for_document(String.t()) :: [any()]
+  def chunks_for_document(document_id) do
+    load_chunks()
+    |> Enum.filter(fn c -> c.document_id == document_id end)
+  end
+
+  @doc """
   Loads discovered URLs for a source.
   """
   @spec load_discovered_urls(atom()) :: [String.t()]
