@@ -14,12 +14,14 @@ defmodule Mix.Tasks.Index do
       - `--chunk-size <n>` - Maximum characters per chunk. Default: 1000.
       - `--overlap <n>` - Character overlap between chunks. Default: 100.
       - `--min-chunk-size <n>` - Minimum characters before forcing cut. Default: 200.
+      - `--only-new` - Only index documents that haven't been indexed yet.
 
   ## Examples
 
       mix index
       mix index --chunk-size 500 --overlap 50
       mix index --chunk-size 1500 --min-chunk-size 300
+      mix index --only-new  # Incremental: only new documents
   """
   use Mix.Task
 
@@ -39,14 +41,16 @@ defmodule Mix.Tasks.Index do
         switches: [
           chunk_size: :integer,
           overlap: :integer,
-          min_chunk_size: :integer
+          min_chunk_size: :integer,
+          only_new: :boolean
         ],
-        aliases: [c: :chunk_size, o: :overlap, m: :min_chunk_size]
+        aliases: [c: :chunk_size, o: :overlap, m: :min_chunk_size, n: :only_new]
       )
 
     chunk_size = Keyword.get(opts, :chunk_size, @default_chunk_size)
     overlap = Keyword.get(opts, :overlap, @default_overlap)
     min_chunk_size = Keyword.get(opts, :min_chunk_size, @default_min_chunk_size)
+    only_new = Keyword.get(opts, :only_new, false)
 
     IO.puts("==================")
     IO.puts("Index Phase - Chunking Documents")
@@ -65,7 +69,29 @@ defmodule Mix.Tasks.Index do
       exit({:shutdown, 1})
     end
 
-    IO.puts("Loaded #{length(documents)} documents")
+    # Filter for new documents if --only-new is specified
+    documents =
+      if only_new do
+        existing_doc_ids =
+          WebRAG.Storage.load_chunks() |> Enum.map(& &1.document_id) |> MapSet.new()
+
+        new_docs = Enum.reject(documents, fn d -> MapSet.member?(existing_doc_ids, d.id) end)
+
+        IO.puts(
+          "Found #{length(new_docs)} new documents (already indexed: #{length(documents) - length(new_docs)})"
+        )
+
+        new_docs
+      else
+        IO.puts("Loaded #{length(documents)} documents")
+        documents
+      end
+
+    if Enum.empty?(documents) do
+      IO.puts("No new documents to index.")
+      exit({:shutdown, 0})
+    end
+
     IO.puts("Creating chunks...")
     IO.puts("")
 
@@ -81,7 +107,7 @@ defmodule Mix.Tasks.Index do
 
     IO.puts("")
     IO.puts("Indexing complete!")
-    IO.puts("Run: mix embed")
+    IO.puts("Run: mix embed --only-missing")
   end
 
   defp chunk_document(doc, chunk_size, overlap) do
