@@ -20,20 +20,23 @@ defmodule WebRAG.Application do
   Configure via `config/runtime.exs` or environment variables:
 
   - `DATABASE_URL` - PostgreSQL connection string
-  - `OPENAI_API_KEY` - OpenAI API key for embeddings
+  - `OLLAMA_URL` - Ollama server URL (default: http://localhost:11434)
   - `CRAWLER_CONCURRENCY` - Max concurrent crawl requests (default: 5)
   - `CRAWLER_RATE_LIMIT` - Requests per second limit (default: 2)
 
   ## Design Decisions
 
-  1. **Supervision Strategy**: We use `one_for_one` for most children since
+  1. **Ollama-Only**: The system now uses Ollama exclusively for embeddings and chat.
+     No external API keys required - all processing happens locally.
+
+  2. **Supervision Strategy**: We use `one_for_one` for most children since
      failures are isolated. The Crawler supervisor uses `one_for_all` to
      ensure crawl jobs are re-queued if the coordinator fails.
 
-  2. **Start Order**: Database is started first (required by Indexer),
+  3. **Start Order**: Database is started first (required by Indexer),
      then Indexer (required by Retriever), then services in dependency order.
 
-  3. **Fault Tolerance**: Each GenServer implements proper error handling
+  4. **Fault Tolerance**: Each GenServer implements proper error handling
      and state recovery. The crawler uses circuit breakers to prevent
      cascade failures from a misbehaving source.
   """
@@ -153,7 +156,9 @@ defmodule WebRAG.Application do
         # Vector store GenServer
         {WebRAG.Indexer.VectorStore, []},
         # Batch embedding processor
-        {WebRAG.Indexer.BatchProcessor, []}
+        {WebRAG.Indexer.BatchProcessor, []},
+        # Search service for retrieval
+        {WebRAG.Retriever.SearchService, []}
       ]
     else
       []

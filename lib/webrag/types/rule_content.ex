@@ -133,6 +133,7 @@ defmodule WebRAG.Types.LLMResponse do
   @derive Jason.Encoder
   defstruct [
     :text,
+    :reasoning,
     :model,
     :finish_reason,
     :usage,
@@ -143,6 +144,7 @@ defmodule WebRAG.Types.LLMResponse do
 
   @type t :: %__MODULE__{
           text: String.t(),
+          reasoning: String.t() | nil,
           model: String.t(),
           finish_reason: String.t() | nil,
           usage: map(),

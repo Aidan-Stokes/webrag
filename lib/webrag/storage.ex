@@ -32,6 +32,7 @@ defmodule WebRAG.Storage do
 
   @data_dir "data"
   @default_source_dir "sources"
+  @conversations_dir "conversations"
 
   @doc """
   Returns the data directory path.
@@ -46,7 +47,8 @@ defmodule WebRAG.Storage do
       Path.join(@data_dir, "documents"),
       Path.join(@data_dir, "chunks"),
       Path.join(@data_dir, "embeddings"),
-      Path.join(@data_dir, @default_source_dir)
+      Path.join(@data_dir, @default_source_dir),
+      Path.join(@data_dir, @conversations_dir)
     ]
 
     Enum.each(directories, &File.mkdir_p!/1)
@@ -907,5 +909,153 @@ defmodule WebRAG.Storage do
     |> Enum.each(fn path ->
       if File.exists?(path), do: File.rm!(path)
     end)
+  end
+
+  # ============================================================================
+  # Conversation Storage
+  # ============================================================================
+
+  @doc """
+  Saves a conversation to JSON file.
+  """
+  @spec save_conversation(map()) :: :ok
+  def save_conversation(conversation) do
+    ensure_directories()
+
+    id = Map.get(conversation, :id) || Map.get(conversation, "id")
+
+    path = conversation_path(id)
+    File.write!(path, Jason.encode!(conversation, pretty: true))
+    :ok
+  end
+
+  @doc """
+  Loads a conversation by ID.
+  Returns nil if not found.
+  """
+  @spec load_conversation(String.t()) :: map() | nil
+  def load_conversation(id) do
+    path = conversation_path(id)
+
+    if File.exists?(path) do
+      case File.read(path) do
+        {:ok, data} -> Jason.decode!(data, keys: :strings)
+        _ -> nil
+      end
+    else
+      nil
+    end
+  end
+
+  @doc """
+  Lists all conversations (sorted by most recent).
+  """
+  @spec list_conversations() :: [map()]
+  def list_conversations do
+    dir = Path.join(@data_dir, @conversations_dir)
+
+    if File.exists?(dir) do
+      Path.wildcard(Path.join(dir, "*.json"))
+      |> Enum.map(fn path ->
+        case File.read(path) do
+          {:ok, data} ->
+            Jason.decode!(data, keys: :strings)
+
+          _ ->
+            nil
+        end
+      end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.sort_by(& &1["inserted_at"], {:desc, DateTime})
+    else
+      []
+    end
+  end
+
+  @doc """
+  Deletes a conversation and its messages.
+  """
+  @spec delete_conversation(String.t()) :: :ok
+  def delete_conversation(id) do
+    path = conversation_path(id)
+
+    if File.exists?(path) do
+      File.rm!(path)
+    end
+
+    messages_path = messages_dir(id)
+
+    if File.exists?(messages_path) do
+      File.rm_rf!(messages_path)
+    end
+
+    :ok
+  end
+
+  @doc """
+  Saves a message to a conversation.
+  """
+  @spec save_message(String.t(), map()) :: :ok
+  def save_message(conversation_id, message) do
+    ensure_directories()
+
+    id = Map.get(message, :id) || Map.get(message, "id")
+
+    dir = messages_dir(conversation_id)
+    File.mkdir_p!(dir)
+
+    path = Path.join(dir, "#{id}.json")
+    File.write!(path, Jason.encode!(message, pretty: true))
+
+    update_conversation_message_count(conversation_id)
+    :ok
+  end
+
+  @doc """
+  Loads all messages for a conversation.
+  """
+  @spec load_messages(String.t()) :: [map()]
+  def load_messages(conversation_id) do
+    dir = messages_dir(conversation_id)
+
+    if File.exists?(dir) do
+      Path.wildcard(Path.join(dir, "*.json"))
+      |> Enum.map(fn path ->
+        case File.read(path) do
+          {:ok, data} -> Jason.decode!(data, keys: :strings)
+          _ -> nil
+        end
+      end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.sort_by(& &1["inserted_at"])
+    else
+      []
+    end
+  end
+
+  @doc """
+  Generates a new conversation ID.
+  """
+  @spec new_conversation_id() :: String.t()
+  def new_conversation_id do
+    UUID.uuid4()
+  end
+
+  defp conversation_path(id), do: Path.join([@data_dir, @conversations_dir, "#{id}.json"])
+
+  defp messages_dir(conversation_id),
+    do: Path.join([@data_dir, @conversations_dir, conversation_id, "messages"])
+
+  defp update_conversation_message_count(conversation_id) do
+    path = conversation_path(conversation_id)
+
+    if File.exists?(path) do
+      {:ok, data} = File.read(path)
+      conversation = Jason.decode!(data, keys: :strings)
+
+      updated = Map.put(conversation, "messages_count", conversation["messages_count"] + 1)
+
+      File.write!(path, Jason.encode!(updated, pretty: true))
+    end
   end
 end

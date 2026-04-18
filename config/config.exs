@@ -27,13 +27,14 @@ config :webrag, :crawler_rate_limit, 5
 config :webrag, :crawler_burst_size, 3
 
 config :webrag, WebRAG.Indexer,
-  embedding_model: "text-embedding-3-small",
-  embedding_dimensions: 1536,
+  embedding_model: "mxbai-embed-large",
+  embedding_dimensions: 768,
   batch_size: 100,
   max_concurrent_batches: System.schedulers_online()
 
 config :webrag, WebRAG.LLM,
-  model: "gpt-4-turbo",
+  model: "llama3",
+  embedding_model: "mxbai-embed-large",
   temperature: 0.3,
   max_tokens: 1500
 

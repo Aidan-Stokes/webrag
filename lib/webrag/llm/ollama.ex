@@ -91,6 +91,77 @@ defmodule WebRAG.LLM.Ollama do
   end
 
   @doc """
+  Streams a chat completion response from Ollama.
+  Returns a stream that yields content chunks as they arrive.
+  """
+  @spec chat_stream([map()], keyword()) :: Enumerable.t()
+  def chat_stream(messages, opts \\ []) do
+    model = Keyword.get(opts, :model, @default_chat_model)
+    temperature = Keyword.get(opts, :temperature, 0.3)
+    max_tokens = Keyword.get(opts, :max_tokens, 1500)
+
+    body = %{
+      model: model,
+      messages: messages,
+      temperature: temperature,
+      max_tokens: max_tokens,
+      stream: true
+    }
+
+    Stream.resource(
+      fn -> start_sse_stream(model, body) end,
+      &read_sse_chunk/1,
+      &close_sse_stream/1
+    )
+  end
+
+  defp start_sse_stream(model, body) do
+    json = Jason.encode!(body)
+
+    port =
+      Port.open(
+        {:spawn,
+         "curl -s -N -X POST -H 'Content-Type: application/json' -d '#{json}' #{@base_url}/api/chat"},
+        [:binary, :stream]
+      )
+
+    port
+  end
+
+  defp read_sse_chunk(port) do
+    receive do
+      {port, {:data, "data: " <> data}} ->
+        case Jason.decode(data) do
+          {:ok, %{"message" => %{"content" => ""}}} ->
+            {[], port}
+
+          {:ok, %{"message" => %{"content" => content}, "done" => false}} ->
+            {[content], port}
+
+          {:ok, %{"done" => true}} ->
+            {:halt, port}
+
+          _ ->
+            {[], port}
+        end
+
+      {port, {:data, data}} when data == ":ok\n" or data == "" ->
+        {[], port}
+
+      {port, {:exit_status, _}} ->
+        {:halt, port}
+    after
+      30000 ->
+        {:halt, port}
+    end
+  end
+
+  defp close_sse_stream(port) do
+    Port.close(port)
+    :ok
+  end
+
+  @doc """
   Checks if Ollama is running and accessible.
   """
   @spec available?() :: boolean()

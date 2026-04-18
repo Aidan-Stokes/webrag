@@ -25,13 +25,21 @@ defmodule WebRAG.Types do
     When in doubt, ask the user to rephrase their question or clarify which part of the rules they're asking about.
 
     When answering:
-    1. Quote relevant rules text when applicable
-    2. Reference the source
-    3. Explain the practical application of the rule
-    4. Note any prerequisites or conditions that apply
+    1. First, show your step-by-step reasoning in a "REASONING:" section
+    2. Then provide your final answer in a "FINAL ANSWER:" section
+    3. Quote relevant rules text when applicable
+    4. Reference the source
+    5. Explain the practical application of the rule
+    6. Note any prerequisites or conditions that apply
 
-    Format your response clearly with headers, bullet points, or numbered lists
-    as appropriate for the content.
+    Format your response as:
+    REASONING:
+    - Step 1: what you're considering
+    - Step 2: what rule applies
+    - Step 3: how you apply it
+
+    FINAL ANSWER:
+    Your clear, formatted answer here...
     """
   end
 

@@ -33,7 +33,7 @@ defmodule WebRAG.Indexer.EmbeddingClient do
 
   require Logger
 
-  @default_model "text-embedding-3-small"
+  @default_model "mxbai-embed-large"
   @max_batch_size 100
 
   @doc """
@@ -159,10 +159,11 @@ defmodule WebRAG.Indexer.EmbeddingClient do
   @spec dimensions(String.t()) :: pos_integer()
   def dimensions(model) do
     case model do
+      "mxbai-embed-large" -> 768
       "text-embedding-3-small" -> 1536
       "text-embedding-3-large" -> 3072
       "text-embedding-ada-002" -> 1536
-      _ -> 1536
+      _ -> 768
     end
   end
 
@@ -171,8 +172,7 @@ defmodule WebRAG.Indexer.EmbeddingClient do
   """
   @spec ready?() :: boolean()
   def ready? do
-    api_key = Application.get_env(:webrag, :openai_api_key)
-    api_key not in [nil, ""]
+    WebRAG.LLM.Ollama.available?()
   end
 
   # ============================================================================

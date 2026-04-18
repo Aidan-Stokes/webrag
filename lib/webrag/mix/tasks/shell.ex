@@ -1,34 +1,48 @@
 defmodule Mix.Tasks.Shell do
   @moduledoc """
-  Interactive search shell for querying your RAG system.
+  Interactive chat shell for the RAG system with conversation memory.
 
   ## Usage
 
       mix shell
 
+  ## Features
+
+  - Chat with the LLM using your Pathfinder 2e knowledge base
+  - Conversation memory persisted across sessions
+  - Chain-of-thought reasoning display
+  - File picker to include custom documents in context
+
   ## Commands
 
       Once in the shell:
-      - Type your question and press Enter to search
+      - Type your question and press Enter to chat
       - :help - Show available commands
-      - :source <domain> - Filter by source (e.g., :source aonprd)
-      - :top <n> - Set number of results (e.g., :top 10)
-      - :history - Show query history
-      - :clear - Clear current results
+      - :new - Start a new conversation
+      - :conversations - List past conversations
+      - :load <id> - Load a past conversation
+      - :delete <id> - Delete a conversation
+      - :files - Open file browser to add documents
+      - :files list - Show included files
+      - :files clear - Remove included files
+      - :source <domain> - Filter by source
+      - :top <n> - Set number of context results
+      - :clear - Clear the screen
       - :quit or :exit - Exit the shell
 
   ## Examples
 
       mix shell
       > What does shield block do?
-      > :source finance.yahoo.com
-      > AAPL earnings
+      > :new
+      > How do cantrips scale?
+      > :load abc123
       > :quit
   """
   use Mix.Task
   require Logger
 
-  @shortdoc "Interactive search shell"
+  @shortdoc "Interactive chat shell with memory"
 
   @impl true
   def run(_args) do
@@ -37,17 +51,17 @@ defmodule Mix.Tasks.Shell do
 
     IO.puts("")
     IO.puts("╔═══════════════════════════════════════════════════╗")
-    IO.puts("║           WebRAG Interactive Shell                 ║")
+    IO.puts("║      WebRAG Chat - Pathfinder 2e Assistant       ║")
     IO.puts("║  Type your question or :help for commands         ║")
     IO.puts("╚═══════════════════════════════════════════════════╝")
     IO.puts("")
     IO.puts("Embeddings will load on first query...\n")
 
     state = %{
-      history: [],
+      current_conversation_id: nil,
+      included_files: [],
       source_filter: nil,
-      top_k: 5,
-      last_context: []
+      top_k: 5
     }
 
     loop(state)
@@ -78,8 +92,23 @@ defmodule Mix.Tasks.Shell do
   end
 
   defp build_prompt(state) do
+    conv_info =
+      if state.current_conversation_id do
+        " [Conversation]"
+      else
+        ""
+      end
+
+    file_info =
+      if length(state.included_files) > 0 do
+        " [#{length(state.included_files)} file(s)]"
+      else
+        ""
+      end
+
     source_str = if state.source_filter, do: " [#{state.source_filter}]", else: ""
-    "❯#{source_str} "
+
+    "❯#{conv_info}#{file_info}#{source_str} "
   end
 
   defp process_input(":" <> cmd, state) do
@@ -89,29 +118,42 @@ defmodule Mix.Tasks.Shell do
   defp process_input(query, state) do
     IO.puts("")
 
-    case WebRAG.Search.search(query, top_k: state.top_k, source: state.source_filter) do
-      {:ok, []} ->
-        IO.puts("  No results found.\n")
-        {state, true}
+    response =
+      if state.current_conversation_id do
+        WebRAG.LLM.Client.continue_conversation(
+          state.current_conversation_id,
+          query,
+          top_k: state.top_k,
+          min_score: 0.7
+        )
+      else
+        case WebRAG.LLM.Client.start_conversation(nil) do
+          {:ok, conversation} ->
+            new_id = conversation["id"]
 
-      {:ok, results} ->
-        display_results(results, query)
+            result =
+              WebRAG.LLM.Client.continue_conversation(
+                new_id,
+                query,
+                top_k: state.top_k,
+                min_score: 0.7
+              )
 
-        IO.puts("Generate LLM answer? (y/n, default y, enter for yes): ")
-        answer = IO.gets("")
-        trimmed = String.downcase(String.trim(answer))
-
-        # Default to yes if just enter pressed
-        do_generate = trimmed == "" or trimmed == "y" or trimmed == "yes"
-
-        if do_generate do
-          generate_answer(query, results)
+            case result do
+              {:ok, _response, _conv} -> {:ok, response: _response, conversation_id: new_id}
+              _ -> result
+            end
         end
+      end
 
-        # Save to history
-        new_history = [{query, length(results)} | state.history] |> Enum.take(50)
+    case response do
+      {:ok, response: llm_response, conversation_id: new_id} ->
+        display_response(llm_response)
+        {put_in(state.current_conversation_id, new_id), true}
 
-        {put_in(state.history, new_history), true}
+      {:ok, _llm_response, _conversation} ->
+        display_response(_llm_response)
+        {state, true}
 
       {:error, reason} ->
         IO.puts("  Error: #{inspect(reason)}\n")
@@ -119,47 +161,21 @@ defmodule Mix.Tasks.Shell do
     end
   end
 
-  defp generate_answer(query, results) do
-    IO.puts("")
-    IO.puts("─" |> String.duplicate(60))
-    IO.puts("Generating answer from #{length(results)} passages...")
-    IO.puts("─" |> String.duplicate(60))
-    IO.puts("")
-
-    context =
-      results
-      |> Enum.with_index(1)
-      |> Enum.map(fn {r, i} ->
-        "[Passage #{i} (source: #{r.metadata["url"]})]\n#{r.text}"
-      end)
-      |> Enum.join("\n\n---\n\n")
-
-    system_prompt = """
-    You are a helpful AI assistant answering questions based on the provided context.
-
-    Context:
-    #{context}
-
-    Question: #{query}
-
-    Provide a clear, accurate answer based on the context above.
-    """
-
-    messages = [
-      %{role: "system", content: system_prompt},
-      %{role: "user", content: query}
-    ]
-
-    case WebRAG.LLM.Ollama.chat(messages, model: "llama3") do
-      {:ok, response} ->
-        IO.puts("ANSWER:")
-        IO.puts("")
-        IO.puts(response.content)
-        IO.puts("")
-
-      {:error, reason} ->
-        IO.puts("Error generating answer: #{inspect(reason)}\n")
+  defp display_response(response) do
+    if response.reasoning && response.reasoning != "" do
+      IO.puts(IO.ANSI.cyan() <> "Reasoning:" <> IO.ANSI.reset())
+      IO.puts("  " <> IO.ANSI.light_black() <> response.reasoning <> IO.ANSI.reset())
+      IO.puts("")
+      IO.puts(IO.ANSI.green() <> "Answer:" <> IO.ANSI.reset())
+      IO.puts("  " <> response.text)
+    else
+      IO.puts(IO.ANSI.green() <> "Answer:" <> IO.ANSI.reset())
+      IO.puts("  " <> response.text)
     end
+
+    IO.puts("")
+    IO.puts(IO.ANSI.light_black() <> "Model: #{response.model}" <> IO.ANSI.reset())
+    IO.puts("")
   end
 
   defp process_command("help", state) do
@@ -167,8 +183,14 @@ defmodule Mix.Tasks.Shell do
     Available commands:
       :quit, :exit     Exit the shell
       :clear           Clear the screen
-      :history         Show query history
-      :source <domain> Set source filter (e.g., :source aonprd, :source finance.yahoo.com)
+      :new             Start a new conversation
+      :conversations   List all conversations
+      :load <id>       Load a conversation by ID
+      :delete <id>     Delete a conversation
+      :files           Open file browser
+      :files list      Show included files
+      :files clear     Remove all included files
+      :source <domain> Filter by source (e.g., :source aonprd)
       :source clear    Clear source filter
       :top <n>         Set number of results (default: 5)
       :stats           Show system statistics
@@ -181,20 +203,156 @@ defmodule Mix.Tasks.Shell do
   defp process_command("quit", _state), do: {nil, false}
   defp process_command("exit", _state), do: {nil, false}
 
-  defp process_command("clear", state) do
-    System.cmd("clear", [])
+  defp process_command("new", state) do
+    case WebRAG.LLM.Client.start_conversation(nil) do
+      {:ok, conversation} ->
+        IO.puts("Started new conversation: #{conversation["id"]}\n")
+        {put_in(state.current_conversation_id, conversation["id"]), true}
+
+      {:error, reason} ->
+        IO.puts("Error starting conversation: #{inspect(reason)}\n")
+        {state, true}
+    end
+  end
+
+  defp process_command("conversations", state) do
+    conversations = WebRAG.LLM.Client.list_conversations()
+
+    if length(conversations) == 0 do
+      IO.puts("No conversations yet.\n")
+    else
+      IO.puts("Conversations:")
+      IO.puts(String.duplicate("-", 50))
+
+      Enum.each(conversations, fn conv ->
+        id = conv["id"] |> String.slice(0, 8)
+        title = conv["title"] || "Untitled"
+        count = conv["messages_count"] || 0
+        updated = conv["updated_at"] || conv["inserted_at"] || "unknown"
+
+        IO.puts("  #{id}... | #{count} messages | #{title}")
+        IO.puts("         Updated: #{updated}")
+      end)
+    end
+
+    IO.puts("")
     {state, true}
   end
 
-  defp process_command("history", state) do
-    IO.puts("Query history:")
+  defp process_command("load", state) do
+    IO.puts("Enter conversation ID: ")
+    id = IO.gets("") |> String.trim()
 
-    Enum.with_index(state.history, 1)
-    |> Enum.each(fn {{query, count}, i} ->
-      IO.puts("  #{i}. #{query} (#{count} results)")
+    if id == "" do
+      IO.puts("No ID provided.\n")
+      {state, true}
+    else
+      case WebRAG.LLM.Client.load_conversation(id) do
+        {:ok, conversation, messages} ->
+          IO.puts("Loaded conversation: #{conversation["title"]}\n")
+          IO.puts("Messages: #{length(messages)}\n")
+
+          display_conversation_history(messages)
+
+          {put_in(state.current_conversation_id, id), true}
+
+        {:error, :not_found} ->
+          IO.puts("Conversation not found.\n")
+          {state, true}
+      end
+    end
+  end
+
+  defp display_conversation_history(messages) do
+    IO.puts("")
+    IO.puts("Conversation history:")
+    IO.puts(String.duplicate("-", 50))
+
+    Enum.each(messages, fn msg ->
+      role = msg["role"]
+      content = msg["content"] |> String.slice(0, 200)
+
+      if role == "user" do
+        IO.puts(IO.ANSI.blue() <> "You: " <> IO.ANSI.reset() <> content)
+      else
+        IO.puts(IO.ANSI.green() <> "Assistant: " <> IO.ANSI.reset() <> content)
+      end
+
+      if msg["reasoning"] && msg["reasoning"] != "" do
+        IO.puts(
+          IO.ANSI.light_black() <> "  (Reasoning: " <> msg["reasoning"] <> ")" <> IO.ANSI.reset()
+        )
+      end
     end)
 
     IO.puts("")
+  end
+
+  defp process_command("delete", state) do
+    IO.puts("Enter conversation ID to delete: ")
+    id = IO.gets("") |> String.trim()
+
+    if id == "" do
+      IO.puts("No ID provided.\n")
+      {state, true}
+    else
+      case WebRAG.LLM.Client.load_conversation(id) do
+        {:ok, conversation, _} ->
+          IO.puts("Delete conversation '#{conversation["title"]}'? (y/n)")
+          confirm = IO.gets("") |> String.downcase() |> String.trim()
+
+          if confirm == "y" do
+            WebRAG.LLM.Client.delete_conversation(id)
+            IO.puts("Deleted.\n")
+
+            new_state =
+              if state.current_conversation_id == id do
+                put_in(state.current_conversation_id, nil)
+              else
+                state
+              end
+
+            {new_state, true}
+          else
+            IO.puts("Cancelled.\n")
+            {state, true}
+          end
+
+        {:error, :not_found} ->
+          IO.puts("Conversation not found.\n")
+          {state, true}
+      end
+    end
+  end
+
+  defp process_command("files", state) do
+    {new_state, _} = WebRAG.FileBrowser.run_file_picker(state)
+    {new_state, true}
+  end
+
+  defp process_command("files list", state) do
+    if length(state.included_files) == 0 do
+      IO.puts("No files included.\n")
+    else
+      IO.puts("Included files:")
+
+      Enum.each(state.included_files, fn file ->
+        IO.puts("  - #{file}")
+      end)
+
+      IO.puts("")
+    end
+
+    {state, true}
+  end
+
+  defp process_command("files clear", state) do
+    IO.puts("Cleared included files.\n")
+    {put_in(state.included_files, []), true}
+  end
+
+  defp process_command("clear", state) do
+    System.cmd("clear", [])
     {state, true}
   end
 
@@ -203,6 +361,7 @@ defmodule Mix.Tasks.Shell do
     IO.puts("  Chunks: #{WebRAG.Storage.count_chunks()}")
     IO.puts("  Embeddings: #{WebRAG.Storage.count_embeddings()}")
     IO.puts("  Documents: #{length(WebRAG.Storage.load_documents())}")
+    IO.puts("  Conversations: #{length(WebRAG.LLM.Client.list_conversations())}")
     IO.puts("  Current filter: #{state.source_filter || "none"}")
     IO.puts("")
     {state, true}
@@ -260,56 +419,5 @@ defmodule Mix.Tasks.Shell do
     IO.puts("Unknown command: :#{cmd}\n")
     IO.puts("Type :help for available commands\n")
     {state, true}
-  end
-
-  defp display_results(results, _query) do
-    IO.puts("─" |> String.duplicate(60))
-
-    Enum.with_index(results, 1)
-    |> Enum.each(fn {r, i} ->
-      score_color =
-        cond do
-          r.score >= 0.7 -> IO.ANSI.green()
-          r.score >= 0.5 -> IO.ANSI.yellow()
-          true -> IO.ANSI.red()
-        end
-
-      IO.puts(
-        "#{IO.ANSI.green()}[#{i}]#{IO.ANSI.reset()} #{score_color}Score: #{Float.round(r.score, 2)}#{IO.ANSI.reset()}"
-      )
-
-      if r.metadata && r.metadata["url"] do
-        IO.puts("    #{IO.ANSI.cyan()}#{r.metadata["url"]}#{IO.ANSI.reset()}")
-      end
-
-      # Truncate text display
-      text =
-        if String.length(r.text) > 400 do
-          String.slice(r.text, 0, 400) <> "..."
-        else
-          r.text
-        end
-
-      IO.puts("    #{text}")
-      IO.puts("")
-    end)
-
-    IO.puts("─" |> String.duplicate(60))
-    IO.puts("Found #{length(results)} results")
-    IO.puts("")
-  end
-
-  defp wait_for_load(attempts) when attempts >= 60 do
-    :ok
-  end
-
-  defp wait_for_load(attempts) do
-    if WebRAG.Indexer.VectorStore.loaded?() do
-      :ok
-    else
-      IO.write(".")
-      Process.sleep(500)
-      wait_for_load(attempts + 1)
-    end
   end
 end

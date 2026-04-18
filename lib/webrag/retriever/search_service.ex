@@ -117,6 +117,14 @@ defmodule WebRAG.Retriever.SearchService do
         context = pack_context(results)
         {:ok, context, results}
 
+      results when is_list(results) ->
+        if results == [] do
+          {:ok, "", []}
+        else
+          context = pack_context(results)
+          {:ok, context, results}
+        end
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -200,6 +208,16 @@ defmodule WebRAG.Retriever.SearchService do
             | total_queries: state.total_queries + 1,
               failed_queries: state.failed_queries + 1
           }
+
+        results when is_list(results) ->
+          %{
+            state
+            | total_queries: state.total_queries + 1,
+              successful_queries: state.successful_queries + 1,
+              avg_query_time_ms:
+                (state.avg_query_time_ms * state.successful_queries + query_time_ms) /
+                  (state.successful_queries + 1)
+          }
       end
 
     {:reply, result, new_state}
@@ -218,16 +236,21 @@ defmodule WebRAG.Retriever.SearchService do
     EmbeddingClient.embed(query)
   end
 
-  defp maybe_enrich_results({:ok, results}, opts) do
-    if Keyword.get(opts, :include_metadata, false) do
-      {:ok, Enum.map(results, &enrich_result/1)}
-    else
-      {:ok, results}
-    end
-  end
+  defp maybe_enrich_results(result, opts) do
+    case result do
+      {:ok, results} when is_list(results) ->
+        if Keyword.get(opts, :include_metadata, false) and length(results) > 0 do
+          {:ok, Enum.map(results, &enrich_result/1)}
+        else
+          {:ok, results}
+        end
 
-  defp maybe_enrich_results({:error, _} = error, _opts) do
-    error
+      {:error, _} = error ->
+        error
+
+      other ->
+        other
+    end
   end
 
   defp enrich_result(result) do
