@@ -33,11 +33,13 @@ WebRAG uses a separate command for each stage of the pipeline:
 
 ```bash
 mix discover    # 1. Find all URLs within scope
-mix crawl      # 2. Crawl discovered URLs
-mix index      # 3. Chunk documents
-mix embed      # 4. Generate vector embeddings
-mix compact    # 5. Export .pb files to JSON for debugging
+mix crawl       # 2. Crawl discovered URLs
+mix index       # 3. Chunk documents
+mix embed       # 4. Generate vector embeddings
+mix compact     # 5. Export .pb files to JSON for debugging
 mix query "?"   # 6. Semantic search
+mix sync        # 7. Run discover + crawl + index + embed
+mix shell       # 8. Interactive search shell
 ```
 
 ## Commands
@@ -117,6 +119,7 @@ mix index [options]
 |--------|-------------|
 | `--chunk-size <n>` | Maximum characters per chunk. Default: 1000. |
 | `--overlap <n>` | Character overlap between chunks. Default: 100. |
+| `--only-new` | Only index documents not already chunked. |
 
 #### Examples
 
@@ -126,6 +129,9 @@ mix index
 
 # Custom chunk settings
 mix index --chunk-size 500 --overlap 50
+
+# Incremental (only new documents)
+mix index --only-new
 ```
 
 ### `mix embed`
@@ -139,6 +145,7 @@ mix embed [options]
 | Option | Description |
 |--------|-------------|
 | `--batch-size <n>` | Number of embeddings per batch. Default: 20. |
+| `--only-missing` | Only embed chunks without existing embeddings. |
 
 #### Examples
 
@@ -148,6 +155,9 @@ mix embed
 
 # Larger batches
 mix embed --batch-size 256
+
+# Incremental (only new chunks)
+mix embed --only-missing
 ```
 
 ### `mix query`
@@ -155,13 +165,75 @@ mix embed --batch-size 256
 Performs semantic search and generates an LLM response.
 
 ```bash
-mix query "<question>"
+mix query "<question>" [options]
 ```
+
+| Option | Description |
+|--------|-------------|
+| `--top <n>` | Number of results to return. Default: 5. |
+| `--source <domain>` | Filter by source domain. |
 
 #### Examples
 
 ```bash
 mix query "How does Shove work?"
+mix query "What is the dwarf language?" --top 10 --source archivesofnethys.com
+```
+
+### `mix sync`
+
+Runs the complete pipeline: discover + crawl + index + embed in one command.
+
+```bash
+mix sync [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--source <name>` | Source ID from config. |
+| `--max <n>` | Maximum pages to crawl. |
+| `--chunk-size <n>` | Maximum characters per chunk. |
+| `--batch-size <n>` | Number of embeddings per batch. |
+| `--only-new` | Only crawl new URLs not already indexed. |
+
+#### Examples
+
+```bash
+# Full sync for a source
+mix sync --source archives_of_nethys --max 5000
+
+# Incremental sync (only new content)
+mix sync --source archives_of_nethys --only-new
+```
+
+### `mix shell`
+
+Interactive search shell with commands for exploring your RAG dataset.
+
+```bash
+mix shell [options]
+```
+
+| Command | Description |
+|---------|-------------|
+| `:help` | Show available commands |
+| `:stats` | Show statistics (chunks, embeddings, sources) |
+| `:sources` | List available sources |
+| `:top <n>` | Show top N chunks by size |
+| `:history` | Show search history |
+| Enter | Run search with current query |
+| Ctrl+C | Exit shell |
+
+Press Enter after searching to generate an LLM answer.
+
+#### Examples
+
+```bash
+mix shell
+:stats
+:source archives_of_nethys
+:top 20
+Who is the king of the realm?
 ```
 
 ## Adding Custom Sources
@@ -197,8 +269,8 @@ config :webrag,
   max_concurrent: System.schedulers_online()
 
 config :webrag, WebRAG.Indexer,
-  embedding_model: "text-embedding-3-small",
-  embedding_dimensions: 1536,
+  embedding_model: "mxbai-embed-large",
+  embedding_dimensions: 1024,
   batch_size: 100,
   max_concurrent_batches: System.schedulers_online()
 ```
@@ -209,58 +281,105 @@ Override via environment:
 MAX_CONCURRENT=16 mix discover
 ```
 
+## Features
+
+### Content Extraction
+
+WebRAG uses a text-density algorithm as fallback for pages that don't match hardcoded selectors:
+- Analyzes text block density to find main content
+- Falls back to text density when specific selectors fail
+- Works across diverse website structures
+
+### Vector Search
+
+The VectorStore provides efficient in-memory search:
+- Cosine similarity for semantic search
+- Source filtering at query time
+- Query embedding cache with 60s TTL
+- HNSW-ready architecture for 100k+ scale
+
+### Hybrid Search
+
+Combines semantic and fuzzy matching:
+- Vector similarity for semantic search
+- Levenshtein distance for keyword matching
+- Score-weighted combination of both
+- Early termination for performance
+
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        mix discover                          │
-│  - Parallel URL discovery (up to CPU threads)                │
-│  - ETS table for deduplication                             │
-│  - Scope filtering by allowed_domains                      │
+│                        mix discover                         │
+│  - Parallel URL discovery (up to CPU threads)              │
+│  - ETS table for deduplication                            │
+│  - Scope filtering by allowed_domains                     │
+│  - --only-new flag for incremental updates                │
 └─────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
+                                 │
+                                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                        mix crawl                            │
-│  - Parallel crawling (up to CPU threads)                    │
+│                         mix crawl                           │
+│  - Parallel crawling (up to CPU threads)                  │
 │  - Content extraction with Floki                           │
-│  - Rate limiting per host                                   │
+│  - Rate limiting per host                                  │
 │  - Skips already-crawled URLs                              │
-│  - Filters invalid URLs (JavaScript, emails, etc.)          │
+│  - Filters invalid URLs (JavaScript, emails, etc.)         │
 │  - Real-time progress bar                                   │
 └─────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
+                                 │
+                                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                        mix index                            │
-│  - Reads documents.pb                                     │
+│                         mix index                           │
+│  - Reads documents.pb                                      │
 │  - Chunks documents                                        │
 │  - Writes chunks.json + chunks.pb                          │
+│  - --only-new flag for incremental updates                │
 └─────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
+                                 │
+                                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                        mix embed                            │
-│  - Parallel embedding generation                            │
-│  - Batch API calls                                         │
-│  - Writes embeddings.json + embeddings.pb                   │
-│  - Real-time progress bar                                   │
+│                         mix embed                          │
+│  - Parallel embedding generation                           │
+│  - Batch API calls                                        │
+│  - Writes embeddings.json + embeddings.pb                  │
+│  - Real-time progress bar                                  │
+│  - --only-missing flag for incremental updates            │
+└────────────────────────��────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      VectorStore (ETS)                      │
+│  - In-memory vector search with cosine similarity            │
+│  - Source filtering at query time                         │
+│  - Query embedding cache (60s TTL)                        │
+│  - HNSW-ready for 100k+ scale                              │
 └─────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
+                                 │
+                                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                        mix compact                          │
-│  - Exports .pb files to JSON for debugging                  │
-│  - Reads: documents.pb, chunks.pb, embeddings.pb           │
-│  - Writes: documents.json, chunks.json, embeddings.json      │
-└─────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│                        mix query                            │
-│  - Semantic search via vector similarity                    │
+│                         mix query                           │
+│  - Hybrid search (semantic + fuzzy)                        │
+│  - Source filtering                                       │
+│  - Levenshtein distance fuzzy matching                     │
 │  - Context injection into LLM                              │
-│  - Response generation                                      │
+└─────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│                         mix sync                           │
+│  - Runs discover + crawl + index + embed                   │
+│  - --only-new for incremental updates                       │
+│  - Progress tracking for all phases                       │
+└─────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│                         mix shell                           │
+│  - Interactive search shell                                │
+│  - Commands: :help, :stats, :source, :top, :history       │
+│  - Press Enter for LLM answer generation                   │
+│  - Colored output with score breakdown                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
