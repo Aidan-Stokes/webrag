@@ -6,7 +6,6 @@ defmodule WebRAG.Search do
   @default_min_score 0.1
   @default_max_per_doc 5
   @keyword_weight 0.3
-  @cache_ttl_ms 60_000
 
   @stopwords ~w(the a an is are was were be been being have has had do does did will would could should may might must shall can this that these those what when where why how who which for from of and or not but with into onto about above below under over after before between during through because)
 
@@ -39,10 +38,6 @@ defmodule WebRAG.Search do
     def put(query, embedding) do
       :ets.insert(@table, {query, embedding, System.system_time(:millisecond)})
     end
-
-    def clear do
-      :ets.delete_all_objects(@table)
-    end
   end
 
   def search(query, opts \\ []) do
@@ -65,63 +60,50 @@ defmodule WebRAG.Search do
         kw = extract_keywords(query)
         idf = load_idf_terms()
 
-        # Get vector search results with source filtering at VectorStore level
         case WebRAG.Indexer.VectorStore.search(qv,
                top_k: top_k * 5,
                min_score: min_score * 0.3,
                source: source_filter
              ) do
-          _ ->
-            kw = extract_keywords(query)
-            idf = load_idf_terms()
+          [] ->
+            {:ok, []}
 
-            # Search VectorStore (which now has chunk metadata too)
-            case WebRAG.Indexer.VectorStore.search(qv,
-                   top_k: top_k * 5,
-                   min_score: min_score * 0.3,
-                   source: source_filter
-                 ) do
-              [] ->
-                {:ok, []}
+          vector_results ->
+            chunks = WebRAG.Storage.load_chunks()
+            chunk_map = Enum.reduce(chunks, %{}, fn c, acc -> Map.put(acc, c.id, c) end)
 
-              vector_results ->
-                # Build chunk map from storage for getting text/metadata
-                chunks = WebRAG.Storage.load_chunks()
-                chunk_map = Enum.reduce(chunks, %{}, fn c, acc -> Map.put(acc, c.id, c) end)
+            results =
+              Enum.map(vector_results, fn vr ->
+                chunk = Map.get(chunk_map, vr.chunk_id)
 
-                results =
-                  Enum.map(vector_results, fn vr ->
-                    chunk = Map.get(chunk_map, vr.chunk_id)
+                unless chunk do
+                  nil
+                else
+                  txt = chunk.text
+                  doc_id = chunk.document_id
+                  ts = tfidf(txt, kw, idf)
 
-                    unless chunk do
-                      nil
-                    else
-                      txt = chunk.text
-                      doc_id = chunk.document_id
-                      ts = tfidf(txt, kw, idf)
+                  %{
+                    score: (1 - @keyword_weight) * vr.score + @keyword_weight * ts,
+                    embed_score: vr.score,
+                    keyword_score: ts,
+                    text: txt,
+                    chunk_id: vr.chunk_id,
+                    document_id: doc_id,
+                    metadata: chunk.metadata || %{}
+                  }
+                end
+              end)
+              |> Enum.reject(&is_nil/1)
 
-                      %{
-                        score: (1 - @keyword_weight) * vr.score + @keyword_weight * ts,
-                        embed_score: vr.score,
-                        keyword_score: ts,
-                        text: txt,
-                        chunk_id: vr.chunk_id,
-                        document_id: doc_id,
-                        metadata: chunk.metadata || %{}
-                      }
-                    end
-                  end)
-                  |> Enum.reject(&is_nil/1)
+            filtered = Enum.filter(results, fn r -> r.score >= min_score end)
+            sorted = Enum.sort_by(filtered, fn r -> r.score end, :desc)
+            limited = Enum.take(sorted, top_k * 3)
+            final = diverse_results(limited, top_k, max_per_doc)
+            {:ok, final}
 
-                filtered = Enum.filter(results, fn r -> r.score >= min_score end)
-                sorted = Enum.sort_by(filtered, fn r -> r.score end, :desc)
-                limited = Enum.take(sorted, top_k * 3)
-                final = diverse_results(limited, top_k, max_per_doc)
-                {:ok, final}
-
-              {:error, reason} ->
-                {:error, reason}
-            end
+          {:error, reason} ->
+            {:error, reason}
         end
     end
   end
@@ -139,13 +121,6 @@ defmodule WebRAG.Search do
     end)
     |> elem(0)
     |> Enum.reverse()
-  end
-
-  defp cosine(v1, v2) do
-    dot = Enum.zip(v1, v2) |> Enum.reduce(0, fn {a, b}, c -> a * b + c end)
-    mag1 = :math.sqrt(Enum.reduce(v1, 0, fn x, c -> x * x + c end))
-    mag2 = :math.sqrt(Enum.reduce(v2, 0, fn x, c -> x * x + c end))
-    if mag1 == 0 or mag2 == 0, do: 0.0, else: dot / (mag1 * mag2)
   end
 
   defp extract_keywords(q) do
@@ -181,7 +156,6 @@ defmodule WebRAG.Search do
   end
 
   defp stem_variants(w) do
-    # Load mappings from file or use defaults
     mappings = %{
       "dwarfs" => "dwarf",
       "elfs" => "elf",
@@ -193,7 +167,6 @@ defmodule WebRAG.Search do
       "dwarves" => "dwarf"
     }
 
-    # Try file-based mappings first
     mappings =
       if File.exists?("data/word_mappings.txt") do
         file_maps =
@@ -218,64 +191,69 @@ defmodule WebRAG.Search do
     stemmed = String.replace(w, ~r/(s|es|ed|ing)$/, "")
 
     result = [w]
-    if singular && singular != w, do: result ++ [singular], else: result
-    if stemmed != w && stemmed != singular, do: result ++ [stemmed], else: result
+    if singular && singular != w, do: result = result ++ [singular], else: result
+    if stemmed != w && stemmed != singular, do: result = result ++ [stemmed], else: result
 
     Enum.uniq(result)
   end
 
-  # Simple fuzzy: check if word is prefix-similar  
-  defp fuzzy_match?(text, word, _max_dist) do
+  defp fuzzy_match?(text, word, max_dist) do
     tws = String.split(String.downcase(text), ~r/\s+/) |> Enum.map(&String.trim/1)
     target = String.downcase(word)
 
-    # Check if target is close to any text word by prefix
     Enum.any?(tws, fn tw ->
-      (String.starts_with?(tw, target) and String.length(target) > 3) or
-        (String.starts_with?(target, tw) and String.length(tw) > 3)
+      dist = levenshtein(target, tw)
+      dist <= max_dist
     end)
   end
 
   defp levenshtein(s1, s2) do
     len1 = String.length(s1)
     len2 = String.length(s2)
-    if abs(len1 - len2) > 2, do: 999, else: do_calc(s1, s2)
+    if abs(len1 - len2) > 3, do: 99, else: do_levenshtein(s1, s2, len1, len2)
   end
 
-  defp do_calc(s1, s2) do
-    len1 = String.length(s1)
-    len2 = String.length(s2)
+  defp do_levenshtein(_s1, _s2, 0, len2), do: len2
+  defp do_levenshtein(_s1, _s2, len1, 0), do: len1
 
-    d =
-      for i <- 0..len1,
-          j <- 0..len2,
-          into: %{},
-          do: {i * 1000 + j, if(i == 0, do: j, else: if(j == 0, do: i, else: 999))}
+  defp do_levenshtein(s1, s2, len1, len2) do
+    g1 = String.graphemes(s1)
+    g2 = String.graphemes(s2)
 
-    String.graphemes(s1)
-    |> Enum.with_index(1)
-    |> Enum.each(fn {c1, i} ->
-      String.graphemes(s2)
-      |> Enum.with_index(1)
-      |> Enum.each(fn {c2, j} ->
-        cost = if c1 == c2, do: 0, else: 1
+    prev = Enum.to_list(0..len2)
 
-        v =
-          Enum.min([
-            d[(i - 1) * 1000 + j] + 1,
-            d[i * 1000 + (j - 1)] + 1,
-            d[(i - 1) * 1000 + (j - 1)] + cost
-          ])
+    result =
+      Enum.reduce_while(g1, prev, fn char, prev_row ->
+        curr = [1]
 
-        d = Map.put(d, i * 1000 + j, v)
+        curr =
+          Enum.reduce(g2, {curr, 1}, fn c2, {row, j} ->
+            cost = if char == c2, do: 0, else: 1
+
+            val =
+              min(
+                Enum.at(prev_row, j) + 1,
+                Enum.at(row, j - 1) + 1,
+                Enum.at(prev_row, j - 1) + cost
+              )
+
+            {List.insert_at(row, j, val), j + 1}
+          end)
+          |> elem(0)
+
+        if Enum.max(curr) > 10 do
+          {:halt, [99]}
+        else
+          {:cont, curr}
+        end
       end)
-    end)
 
-    d[len1 * 1000 + len2]
+    Enum.at(result, len2)
   end
+
+  defp min(a, b, c), do: Enum.min([a, b, c])
 
   defp load_idf_terms, do: WebRAG.Storage.load_idf_terms()
-  defp hybrid(e, t), do: (1 - @keyword_weight) * e + @keyword_weight * t
 
   defp get_or_create_embedding(query) do
     QueryCache.init()
